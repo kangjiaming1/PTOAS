@@ -1731,6 +1731,7 @@ int main(int argc, char **argv) {
 
     if (failed(lowerPTOToVPTOBackend(*module, argc, argv)))
       return 1;
+
     return emitVPTOBackendResult(*module, outputFile);
   }
 
