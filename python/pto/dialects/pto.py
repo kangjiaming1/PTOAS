@@ -601,6 +601,7 @@ class TileConfig:
 
 _PARTITION_VIEW_UNSET = object()
 _GeneratedPartitionViewOp = PartitionViewOp
+_TSCATTER_UNSET = object()
 
 
 class PartitionViewOp(_GeneratedPartitionViewOp):
@@ -694,6 +695,50 @@ def partition_view(*args, **kwargs) -> _ods_ir.Value:
 
 
 PartitionView = PartitionViewOp
+
+
+_GeneratedTScatterOp = TScatterOp
+
+
+class TScatterOp(_GeneratedTScatterOp):
+    """Compatibility wrapper for legacy positional-index tscatter builders."""
+
+    def __init__(
+        self,
+        src,
+        dst,
+        *args,
+        indexes=_TSCATTER_UNSET,
+        maskPattern=_TSCATTER_UNSET,
+        loc=None,
+        ip=None,
+    ):
+        if len(args) > 1:
+            raise TypeError(f"too many positional arguments: {len(args) + 2}")
+
+        if args:
+            if indexes is not _TSCATTER_UNSET or maskPattern is not _TSCATTER_UNSET:
+                raise TypeError(
+                    "positional third argument cannot be combined with "
+                    "'indexes' or 'maskPattern' keywords"
+                )
+            third = args[0]
+            if isinstance(third, (MaskPattern, MaskPatternAttr)):
+                maskPattern = third
+            else:
+                indexes = third
+
+        kwargs = {}
+        if indexes is not _TSCATTER_UNSET:
+            kwargs["indexes"] = indexes
+        if maskPattern is not _TSCATTER_UNSET:
+            kwargs["maskPattern"] = maskPattern
+        super().__init__(src, dst, **kwargs, loc=loc, ip=ip)
+
+
+TScatter = TScatterOp
+if "TScatter" not in __all__:
+    __all__.append("TScatter")
 
 
 # -----------------------------------------------------------------------------
