@@ -9698,10 +9698,10 @@ static void replaceOrEraseWithOpaqueCall(Operation *op,
                                         StringRef callee,
                                         ArrayRef<Value> args,
                                         ConversionPatternRewriter &rewriter) {
-  TypeRange resultTypes = op->getResultTypes();
   auto call = rewriter.create<emitc::CallOpaqueOp>(
-      op->getLoc(), resultTypes, callee, ArrayAttr{}, ArrayAttr{}, ValueRange(args));
-  if (resultTypes.empty())
+      op->getLoc(), TypeRange{}, callee, ArrayAttr{}, ArrayAttr{},
+      ValueRange(args));
+  if (op->getNumResults() == 0)
     rewriter.eraseOp(op);
   else
     rewriter.replaceOp(op, call.getResults());
