@@ -894,7 +894,8 @@ def TMatmulMxAccOp : PTO_TOp<"tmatmul.mx.acc", [
     PTODpsType:$a_scale,
     PTODpsType:$b,
     PTODpsType:$b_scale,
-    PTODpsType:$dst);
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_AccPhaseAttr, "::mlir::pto::AccPhase::Unspecified">:$accPhase);
 
   let results = (outs Optional<AnyRankedTensor>:$result);
   let hasVerifier = 1;
@@ -1177,7 +1178,8 @@ def TGemvMxAccOp : PTO_TOp<"tgemv.mx.acc", [
     PTODpsType:$a_scale,
     PTODpsType:$b,
     PTODpsType:$b_scale,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_AccPhaseAttr, "::mlir::pto::AccPhase::Unspecified">:$accPhase
   );
 
   let results = (outs Optional<AnyRankedTensor>:$result);

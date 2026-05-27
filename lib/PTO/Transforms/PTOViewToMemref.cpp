@@ -1969,7 +1969,7 @@ struct PTOViewToMemrefPass
           op->getOperand(kThirdOperandIndex),
           op->getOperand(kFourthOperandIndex),
           op->getOperand(kFifthOperandIndex),
-          op->getOperand(kSixthOperandIndex));
+          op->getOperand(kSixthOperandIndex), op.getAccPhaseAttr());
       }
 
       // --- TMatmulMxBiasOp ---
@@ -2054,7 +2054,7 @@ struct PTOViewToMemrefPass
           op->getOperand(kThirdOperandIndex),
           op->getOperand(kFourthOperandIndex),
           op->getOperand(kFifthOperandIndex),
-          op->getOperand(kSixthOperandIndex));
+          op->getOperand(kSixthOperandIndex), op.getAccPhaseAttr());
       }
 
       // --- TGemvMxBiasOp [A, AScale, B, BScale, Bias, Dst] ---

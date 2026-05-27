@@ -9765,8 +9765,10 @@ struct PTOTGemvMXAccToTGEMV_MX
     Value bScale  = peelUnrealized(adaptor.getBScale());
     Value dst     = peelUnrealized(adaptor.getDst());
 
+    ArrayAttr templateArgs =
+        buildAccPhaseTemplateArgs(rewriter, op.getAccPhase());
     replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TGEMV_MX",
-                                             {dst, cIn, a, aScale, b, bScale}, ArrayAttr{},
+                                             {dst, cIn, a, aScale, b, bScale}, templateArgs,
                                              rewriter);
     return success();
   }
@@ -9845,8 +9847,10 @@ struct PTOTMatmulMXAccToTMATMUL_MX_ACC
     Value bScale  = peelUnrealized(adaptor.getBScale());
     Value dst     = peelUnrealized(adaptor.getDst());
 
+    ArrayAttr templateArgs =
+        buildAccPhaseTemplateArgs(rewriter, op.getAccPhase());
     replaceOrEraseWithOpaqueCallAndReturnDst(op.getOperation(), dst, "TMATMUL_MX",
-                                             {dst, cIn, a, aScale, b, bScale}, ArrayAttr{},
+                                             {dst, cIn, a, aScale, b, bScale}, templateArgs,
                                              rewriter);
     return success();
   }

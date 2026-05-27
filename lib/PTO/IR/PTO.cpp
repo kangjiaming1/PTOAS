@@ -4138,9 +4138,27 @@ static LogicalResult verifyA5MxGemvTileOperands(Operation *op, Type lhsTy,
     return op->emitOpError(
         "expects lhs, rhs, and dst to use the left, right, and acc address spaces");
 
+  auto lhsShape = getMatmulLogicalShapeVec(lhsTy);
+  auto rhsShape = getMatmulLogicalShapeVec(rhsTy);
+  auto dstShape = getMatmulLogicalShapeVec(dstTy);
+  if ((lhsShape[0] != dstShape[0] || rhsShape[1] != dstShape[1] ||
+       lhsShape[1] != rhsShape[0]))
+    return op->emitOpError(
+        "expects static matmul tile shapes lhs[M,K], rhs[K,N], and dst[M,N]");
+
   auto lhsValid = getValidShapeVec(lhsTy);
   auto rhsValid = getValidShapeVec(rhsTy);
   auto dstValid = getValidShapeVec(dstTy);
+  if (lhsValid.size() == 2 && rhsValid.size() == 2) {
+    int64_t m = lhsValid[0];
+    int64_t k = lhsValid[1];
+    int64_t n = rhsValid[1];
+    if ((m != ShapedType::kDynamic && (m < 1 || m > 4095)) ||
+        (k != ShapedType::kDynamic && (k < 1 || k > 4095)) ||
+        (n != ShapedType::kDynamic && (n < 1 || n > 4095)))
+      return op->emitOpError("expects m, k, and n valid sizes to be in [1, 4095]");
+  }
+
   if (lhsValid[0] != ShapedType::kDynamic && lhsValid[0] != 1)
     return op->emitOpError("expects lhs valid_shape[0] to be 1 for tgemv");
   if (dstValid[0] != ShapedType::kDynamic && dstValid[0] != 1)
@@ -6692,8 +6710,8 @@ LogicalResult TGemvMxAccOp::verify() {
                                              getA().getType(), "a_scale", "a")) ||
         failed(verifyScaleTileMatchesOperand(*this, getBScale().getType(),
                                              getB().getType(), "b_scale", "b")) ||
-        failed(verifyGemvTileOperands(*this, getA().getType(), getB().getType(),
-                                      getDst().getType())))
+        failed(verifyA5MxGemvTileOperands(*this, getA().getType(), getB().getType(),
+                                          getDst().getType())))
       return failure();
     if (failed(verifyA5MxTypeTriple(*this, getA().getType(), getB().getType(),
                                     getDst().getType(), "lhs", "rhs", "dst")))
