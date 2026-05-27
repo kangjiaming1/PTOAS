@@ -8346,6 +8346,10 @@ frontend/framework generated IR. The detailed design document is:
   function.
 - `slot_size` is expressed in bytes and uses the pre-split logical pipe-entry
   size.
+- `slot_num` is an optional compile-time integer attribute on
+  `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`. It controls the GM
+  ring FIFO depth and defaults to `8` for `dir_mask = 1/2` or `4` for
+  `dir_mask = 3`.
 - `local_slot_num` is an optional compile-time integer attribute on
   `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`.
   On A2/A3 it overrides the default consumer-side local FIFO slot count only
@@ -8369,9 +8373,10 @@ frontend/framework generated IR. The detailed design document is:
   (`pto.initialize_l2g2l_pipe`). It does not implicitly execute `pto.tstore` or
   `pto.tload`; callers move data explicitly before `tpush` or after `tpop`.
 - When every transfer op bound to one pipe id uses a global entry, the pipe is
-  a global-only GM FIFO. Its frontend initialize op carries only
-  `gm_slot_tensor`; `gm_slot_buffer`, `c2v_consumer_buf`, `v2c_consumer_buf`, `local_slot_num`,
-  `pto.reserve_buffer`, and `pto.import_reserved_buffer` are not used.
+  a global-only GM FIFO. Its frontend initialize op carries `gm_slot_tensor`
+  and may carry `slot_num`; `gm_slot_buffer`, `c2v_consumer_buf`,
+  `v2c_consumer_buf`, `local_slot_num`, `pto.reserve_buffer`, and
+  `pto.import_reserved_buffer` are not used.
 - For global entries, the matched initialize op's `gm_slot_tensor` describes
   one FIFO slot entry, not the full multi-slot FIFO buffer. Its dtype, shape,
   stride, and layout must match the `tensor_view` returned by `talloc` /
@@ -8505,7 +8510,7 @@ this op.
 
 ```mlir
 // A2/A3 (with GM slot buffer):
-pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num = 1}
+pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, slot_num = 2, local_slot_num = 1}
   (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
    c2v_consumer_buf = %c2v_import : i32,
    v2c_consumer_buf = %c0_i32 : i32)
@@ -8529,6 +8534,8 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
   the same function
 - `dir_mask`: communication direction encoding
 - `slot_size`: logical slot size in bytes
+- `slot_num`: optional GM ring FIFO slot count; omitted defaults to `8` for
+  `dir_mask = 1/2` or `4` for `dir_mask = 3`
 - `local_slot_num`: optional A2/A3-only local FIFO slot count override for the
   lowered `pto.initialize_l2g2l_pipe`; omitted for global-only GM FIFO
 - `nosplit`: optional compile-time boolean controlling no-split pipe mode
@@ -8551,12 +8558,12 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - Must appear in Cube kernels
 - Multiple `pto.aic_initialize_pipe` ops are allowed in one Cube function, but
   `id` must be unique among frontend initialize ops in that function
+- If `slot_num` is present, it must be greater than `0`
 - If `local_slot_num` is present, it must be greater than `0` and no greater
-  than the legacy slot count implied by `dir_mask`
-  (`8` for `dir_mask = 1/2`, `4` for `dir_mask = 3`)
+  than the effective `slot_num`
 - A global-only GM FIFO initialize carries only `gm_slot_tensor`; it must not
   carry `gm_slot_buffer`, `local_slot_num`, `c2v_consumer_buf`, or
-  `v2c_consumer_buf`
+  `v2c_consumer_buf`; it may carry `slot_num`
 - For global-only GM FIFO, `slot_size` must match the byte size of
   `gm_slot_tensor`
 - Global-entry `talloc` / `tpush` / `tpop` / `tfree` entry types must match the
@@ -8576,7 +8583,7 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 
 ```mlir
 // A2/A3 (with GM slot buffer):
-pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num = 1}
+pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, slot_num = 2, local_slot_num = 1}
   (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
    c2v_consumer_buf = %c2v_local : i32,
    v2c_consumer_buf = %c0_i32 : i32)
