@@ -11475,6 +11475,7 @@ static ParseResult parseFrontendInitializePipeOp(OpAsmParser &parser,
   bool sawId = false;
   bool sawDirMask = false;
   bool sawSlotSize = false;
+  bool sawSlotNum = false;
   bool sawLocalSlotNum = false;
   bool sawNoSplit = false;
 
@@ -11513,6 +11514,15 @@ static ParseResult parseFrontendInitializePipeOp(OpAsmParser &parser,
                                 "slot_size", attrs))
         return failure();
       sawSlotSize = true;
+    } else if (keyword == "slot_num") {
+      if (sawSlotNum)
+        return parser.emitError(parser.getCurrentLocation(),
+                                "duplicate 'slot_num' clause");
+      IntegerAttr slotNumAttr;
+      if (parser.parseAttribute(slotNumAttr, parser.getBuilder().getI32Type(),
+                                "slot_num", attrs))
+        return failure();
+      sawSlotNum = true;
     } else if (keyword == "local_slot_num") {
       if (sawLocalSlotNum)
         return parser.emitError(parser.getCurrentLocation(),
@@ -11650,6 +11660,8 @@ static void printFrontendInitializePipeOp(InitOpT op, OpAsmPrinter &p) {
     printClause("id", op.getId());
   printClause("dir_mask", static_cast<int32_t>(op.getDirMask()));
   printClause("slot_size", op.getSlotSize());
+  if (auto slotNumAttr = op.getSlotNumAttr())
+    printClause("slot_num", slotNumAttr.getInt());
   if (auto localSlotNumAttr = op.getLocalSlotNumAttr())
     printClause("local_slot_num", localSlotNumAttr.getInt());
   if (auto noSplitAttr = op.getNosplitAttr())
@@ -11676,7 +11688,8 @@ static void printFrontendInitializePipeOp(InitOpT op, OpAsmPrinter &p) {
   p << ")";
   p.printOptionalAttrDict(
       op->getAttrs(),
-      /*elidedAttrs=*/{"id", "dir_mask", "slot_size", "local_slot_num",
+      /*elidedAttrs=*/{"id", "dir_mask", "slot_size", "slot_num",
+                       "local_slot_num",
                        "nosplit", "operandSegmentSizes"});
 }
 
@@ -11762,6 +11775,13 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
     return op.emitOpError("expects 'dir_mask' to be 1, 2, or 3");
   if (op.getSlotSize() <= 0)
     return op.emitOpError("expects 'slot_size' to be greater than 0");
+  int32_t slotNum = dirMask == 3 ? 4 : 8;
+  if (auto slotNumAttr = op.getSlotNumAttr()) {
+    slotNum = slotNumAttr.getInt();
+    if (slotNum <= 0)
+      return op.emitOpError("expects 'slot_num' to be greater than 0");
+  }
+  PTOArch arch = getTargetArch(op.getOperation());
 
   bool hasGlobalSlotTensor = static_cast<bool>(op.getGmSlotTensor());
   bool hasC2vConsumerBuf = static_cast<bool>(op.getC2vConsumerBuf());
@@ -11775,7 +11795,7 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
     if (op.getLocalSlotNumAttr())
       return op.emitOpError(
           "globaltensor pipe init does not use 'local_slot_num'");
-    if (getTargetArch(op.getOperation()) == PTOArch::A5) {
+    if (arch == PTOArch::A5) {
       return op.emitOpError(
           "globaltensor pipe entries are supported for a2/a3 l2g2l pipes");
     }
@@ -11794,14 +11814,16 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
   }
 
   if (auto localSlotNumAttr = op.getLocalSlotNumAttr()) {
+    if (arch == PTOArch::A5)
+      return op.emitOpError(
+          "'local_slot_num' is only supported for a2/a3 frontend pipe lowering");
     int32_t localSlotNum = localSlotNumAttr.getInt();
     if (localSlotNum <= 0)
       return op.emitOpError("expects 'local_slot_num' to be greater than 0");
-    int32_t loweredSlotNum = dirMask == 3 ? 4 : 8;
-    if (localSlotNum > loweredSlotNum) {
+    if (localSlotNum > slotNum) {
       return op.emitOpError()
-             << "expects 'local_slot_num' to be less than or equal to "
-             << loweredSlotNum << " for dir_mask = " << static_cast<int>(dirMask);
+             << "expects 'local_slot_num' to be less than or equal to slot_num ("
+             << slotNum << ") for dir_mask = " << static_cast<int>(dirMask);
     }
   }
 
@@ -12078,8 +12100,8 @@ static LogicalResult verifyPipeShape(Operation *op, int8_t dirMask, int32_t slot
     return op->emitOpError("expects 'dir_mask' to be 1, 2, or 3");
   if (slotSize <= 0)
     return op->emitOpError("expects 'slot_size' to be greater than 0");
-  if (slotNum != 4 && slotNum != 8)
-    return op->emitOpError("expects 'slot_num' to be 4 or 8");
+  if (slotNum <= 0)
+    return op->emitOpError("expects 'slot_num' to be greater than 0");
   if (flagBase && *flagBase < 0)
     return op->emitOpError("expects 'flag_base' to be non-negative when present");
   if (flagBase) {

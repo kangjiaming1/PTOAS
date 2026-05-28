@@ -8355,11 +8355,21 @@ frontend/framework generated IR. The detailed design document is:
   function.
 - `slot_size` is expressed in bytes and uses the pre-split logical pipe-entry
   size.
+- `slot_num` is an optional compile-time integer attribute on
+  `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`. It controls the pipe
+  FIFO depth. The `effective_slot_num` is the explicit value when present, or
+  the default value: `8` for `dir_mask = 1/2` or `4` for `dir_mask = 3`.
 - `local_slot_num` is an optional compile-time integer attribute on
   `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`.
   On A2/A3 it overrides the default consumer-side local FIFO slot count only
   when the pipe uses a local consumer FIFO buffer. Global-only GM FIFO pipes
   omit it.
+- `pto.reserve_buffer.size` is the byte size of the consumer-side local FIFO
+  buffer. For A2/A3 local FIFO pipes, it should be
+  `slot_size * effective_local_slot_num`, where `effective_local_slot_num` is
+  the explicit `local_slot_num` when present or the effective `slot_num`
+  otherwise. For A5 local FIFO pipes, `local_slot_num` is not configurable and
+  the reserved byte size should be `slot_size * effective_slot_num`.
 - `nosplit` is an optional compile-time boolean attribute on
   `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`.
 - `split` is a compile-time attribute, not a runtime SSA operand.
@@ -8378,9 +8388,10 @@ frontend/framework generated IR. The detailed design document is:
   (`pto.initialize_l2g2l_pipe`). It does not implicitly execute `pto.tstore` or
   `pto.tload`; callers move data explicitly before `tpush` or after `tpop`.
 - When every transfer op bound to one pipe id uses a global entry, the pipe is
-  a global-only GM FIFO. Its frontend initialize op carries only
-  `gm_slot_tensor`; `gm_slot_buffer`, `c2v_consumer_buf`, `v2c_consumer_buf`, `local_slot_num`,
-  `pto.reserve_buffer`, and `pto.import_reserved_buffer` are not used.
+  a global-only GM FIFO. Its frontend initialize op carries `gm_slot_tensor`
+  and may carry `slot_num`; `gm_slot_buffer`, `c2v_consumer_buf`,
+  `v2c_consumer_buf`, `local_slot_num`, `pto.reserve_buffer`, and
+  `pto.import_reserved_buffer` are not used.
 - For global entries, the matched initialize op's `gm_slot_tensor` describes
   one FIFO slot entry, not the full multi-slot FIFO buffer. Its dtype, shape,
   stride, and layout must match the `tensor_view` returned by `talloc` /
@@ -8450,7 +8461,10 @@ When the address is already fixed in the input IR:
 **Arguments:**
 
 - `name`: string attribute identifying the logical reserved buffer
-- `size`: reserved buffer size in bytes
+- `size`: reserved buffer size in bytes. For A2/A3 local FIFO pipes this is
+  `slot_size * effective_local_slot_num`; for A5 local FIFO pipes this is
+  `slot_size * effective_slot_num`. Global-only GM FIFO pipes do not use
+  `pto.reserve_buffer`.
 - `location`: local address-space attribute, typically `vec` or `mat`
 - `auto`: boolean allocation-mode flag in textual IR
 - `base`: optional explicit local base address
@@ -8461,6 +8475,9 @@ When the address is already fixed in the input IR:
 
 - Multiple `pto.reserve_buffer` ops are allowed in one function, but `name`
   must be unique within that function
+- `size` must be greater than `0`; PTOAS allocates exactly the requested byte
+  size, so it should match the local FIFO sizing rule of the pipe that consumes
+  this buffer
 - `location` must be a supported local address space
 - Op-level verification requires:
   - `auto = false` must provide `base`
@@ -8514,7 +8531,7 @@ this op.
 
 ```mlir
 // A2/A3 (with GM slot buffer):
-pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num = 1}
+pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, slot_num = 2, local_slot_num = 1}
   (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
    c2v_consumer_buf = %c2v_import : i32,
    v2c_consumer_buf = %c0_i32 : i32)
@@ -8538,6 +8555,8 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
   the same function
 - `dir_mask`: communication direction encoding
 - `slot_size`: logical slot size in bytes
+- `slot_num`: optional GM ring FIFO slot count; omitted defaults to `8` for
+  `dir_mask = 1/2` or `4` for `dir_mask = 3`
 - `local_slot_num`: optional A2/A3-only local FIFO slot count override for the
   lowered `pto.initialize_l2g2l_pipe`; omitted for global-only GM FIFO
 - `nosplit`: optional compile-time boolean controlling no-split pipe mode
@@ -8560,12 +8579,16 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - Must appear in Cube kernels
 - Multiple `pto.aic_initialize_pipe` ops are allowed in one Cube function, but
   `id` must be unique among frontend initialize ops in that function
+- If `slot_num` is present, it must be greater than `0`
 - If `local_slot_num` is present, it must be greater than `0` and no greater
-  than the legacy slot count implied by `dir_mask`
-  (`8` for `dir_mask = 1/2`, `4` for `dir_mask = 3`)
+  than the effective `slot_num`
+- On A5, `local_slot_num` must be omitted; A5 frontend pipes lower to
+  `pto.initialize_l2l_pipe`, which does not use a local FIFO slot-count
+  template parameter. Its consumer-side `pto.reserve_buffer.size` should be
+  `slot_size * effective_slot_num`
 - A global-only GM FIFO initialize carries only `gm_slot_tensor`; it must not
   carry `gm_slot_buffer`, `local_slot_num`, `c2v_consumer_buf`, or
-  `v2c_consumer_buf`
+  `v2c_consumer_buf`; it may carry `slot_num`
 - For global-only GM FIFO, `slot_size` must match the byte size of
   `gm_slot_tensor`
 - Global-entry `talloc` / `tpush` / `tpop` / `tfree` entry types must match the
@@ -8585,7 +8608,7 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 
 ```mlir
 // A2/A3 (with GM slot buffer):
-pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num = 1}
+pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, slot_num = 2, local_slot_num = 1}
   (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
    c2v_consumer_buf = %c2v_local : i32,
    v2c_consumer_buf = %c0_i32 : i32)
