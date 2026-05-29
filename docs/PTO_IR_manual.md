@@ -99,15 +99,20 @@ number of scalar FP4 elements.
 Operation support is still opt-in. Defining the type in PTO IR does not by
 itself imply that any particular operation accepts it.
 
-### 2.2 `!pto.ptr<elementType>`
+### 2.2 `!pto.ptr<elementType[, memorySpace]>`
 
-A pointer to global memory.
+A typed pointer. `memorySpace` is optional and defaults to `gm`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `elementType` | `element-type(i1/i8/i16/i32/f16/f32/bf16...)` | Element type pointed to |
+| `memorySpace` | `gm` or `ub` | Pointer address space alias (`gm` -> global memory, `ub` -> vector/UB memory) |
 
-**Syntax:** `!pto.ptr<f16>`
+**Syntax:** `!pto.ptr<f16>` or `!pto.ptr<f16, ub>`
+
+Pointer conversions are modeled explicitly with [`pto.castptr`](#ptocastptr).
+Between two `!pto.ptr` types, casts are only legal when both pointers stay in
+the same PTO memory space.
 
 ---
 
@@ -452,6 +457,39 @@ result = ptr + offset   // offset is in elements, not bytes
 %ptr_off = pto.addptr %base, %offset : !pto.ptr<f32> -> !pto.ptr<f32>
 ```
 
+##### `pto.castptr` - Explicit Pointer Cast
+
+**Summary:** Performs an explicit cast between integer addresses and `!pto.ptr`,
+or between two `!pto.ptr` types.
+
+**Semantics:**
+
+```mlir
+%p0 = pto.castptr %addr : i64 -> !pto.ptr<f32, ub>
+%p1 = pto.castptr %p0 : !pto.ptr<f32, ub> -> !pto.ptr<i8, ub>
+%addr2 = pto.castptr %p1 : !pto.ptr<i8, ub> -> i64
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `input` | `integer` or `!pto.ptr<...>` | Source value to cast |
+
+**Results:** `integer` or `!pto.ptr<...>`
+
+**Constraints & Verification:**
+
+- Integer-to-integer casts are rejected; use normal integer cast ops instead
+- Descriptor values such as `!pto.tensor_view<...>` and `!pto.partition_tensor_view<...>` are not legal direct inputs; extract a memref address first
+- Pointer-to-pointer casts are only legal when source and destination stay in
+  the same PTO memory space (`gm` or `ub`)
+- The operation is pure (no side effects)
+
+**Hardware Mapping:**
+
+- No hardware pipeline (representation conversion only)
+
 ##### `pto.make_tensor_view` - Create Tensor View
 
 **Summary:** Constructs a global tensor view from a pointer, declaring the physical base and strides (no allocation, no data movement).
@@ -534,6 +572,43 @@ This op is primarily defined on `!pto.tensor_view`.
 %pv = pto.partition_view %tv,
        offsets = [%c0, %c0], sizes = [%h, %w]
        : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<32x32xf32>
+```
+
+---
+
+##### `pto.get_tensor_view_stride` - Get Tensor View Dimension Stride
+
+**Summary:** Returns the logical stride of a given dimension of a tensor view.
+
+**Semantics:**
+
+```mlir
+stride = get_tensor_view_stride(tv_or_mr, dim_index)
+```
+
+This op is defined on `!pto.tensor_view`. During internal lowering, the same
+query may temporarily appear on the memref form lowered from the tensor view.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `tensor_view` | `!pto.tensor_view<...>` or `memref<...>` | Logical tensor view or its lowered memref form |
+| `dim_index` | `index` | Dimension index (0-based) |
+
+**Results:** `index` — the logical stride of the requested dimension, measured
+in elements rather than bytes.
+
+**Notes:**
+
+- This op is the IR counterpart of the DSL-side `TensorView.strides` metadata access.
+- After lowering to memref, static strides may be folded into constants, while dynamic strides are derived from memref metadata.
+
+**Basic Example:**
+
+```mlir
+%s0 = pto.get_tensor_view_stride %tv, %c0 : !pto.tensor_view<?x?xf32> -> index
+%s1 = pto.get_tensor_view_stride %tv, %c1 : !pto.tensor_view<?x?xf32> -> index
 ```
 
 ---

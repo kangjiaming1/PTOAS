@@ -53,7 +53,7 @@ def TileBufOrMemRef :
 def ScalarPtrOrMemRef :
   TypeConstraint<
     CPred<"::mlir::pto::isScalarPtrOrMemRef($_self)">,
-    "Ptr or MemRef in GM">;
+    "Ptr or GM MemRef">;
 
 def ScalarType :
   AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
@@ -75,6 +75,8 @@ class PTO_DpsOp<string mnemonic, list<Trait> traits = []>
 
 class PTO_Op<string mnemonic, list<Trait> traits = []>
     : Op<PTO_Dialect, mnemonic, !listconcat(traits, [ ])>;
+
+include "PTO/IR/VPTOOps.td"
 
 //===----------------------------------------------------------------------===//
 // Pointer/View Ops (for your front-end IR)
@@ -150,6 +152,31 @@ def IntToPtrOp : PTO_Op<"inttoptr", [Pure]> {
 
   let assemblyFormat = [{
     $addr attr-dict `:` type($addr) `->` type($result)
+  }];
+}
+
+def CastPtrOp : PTO_Op<"castptr", [Pure]> {
+  let summary = "Cast between integer and !pto.ptr, or between !pto.ptr types";
+  let description = [{
+    Performs an explicit pointer-domain cast.
+
+    Supported cases:
+    - integer -> !pto.ptr<elem, space>
+    - !pto.ptr<elem, space> -> integer
+    - !pto.ptr<srcElem, space> -> !pto.ptr<dstElem, space>
+    - memref<..., space> -> !pto.ptr<elem, space> (extract the aligned base ptr)
+
+    Pointer-to-pointer casts must stay within the same PTO memory space. Cross
+    space casts such as gm <-> ub are rejected by the verifier.
+  }];
+
+  let arguments = (ins AnyType:$input);
+  let results = (outs AnyType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $input attr-dict `:` type($input) `->` type($result)
   }];
 }
 
@@ -239,8 +266,9 @@ def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
 }
 
 // Helper: tensor_view or memref (after lowering tensor_view to memref).
-def TensorViewOrMemRef :
-  AnyTypeOf<[TensorViewType, AnyMemRef], "TensorView or MemRef">;
+def TensorViewLikeOrMemRef :
+  AnyTypeOf<[TensorViewType, PartitionTensorViewType, AnyMemRef],
+            "TensorView, PartitionTensorView, or MemRef">;
 
 // Get the size of a dimension of a tensor_view or its lowered memref view.
 // Result type: Index (use arith.index_cast if i32 is needed).
@@ -257,7 +285,27 @@ def GetTensorViewDimOp : PTO_Op<"get_tensor_view_dim", [Pure]> {
         : memref<...>, index -> index
   }];
   let arguments = (ins
-    TensorViewOrMemRef:$tensor_view,
+    TensorViewLikeOrMemRef:$tensor_view,
+    Index:$dim_index
+  );
+  let results = (outs Index:$result);
+  let assemblyFormat = [{
+    $tensor_view `,` $dim_index `:` qualified(type($tensor_view)) `->` qualified(type($result))
+    attr-dict
+  }];
+}
+
+// Get the logical stride of a tensor_view dimension in elements.
+// Result type: Index (use arith.index_cast if i32 is needed).
+def GetTensorViewStrideOp : PTO_Op<"get_tensor_view_stride", [Pure]> {
+  let summary = "Get the stride of a dimension of a tensor_view.";
+  let description = [{
+    Returns the stride, measured in elements, of the given dimension of a
+    logical tensor view. This op accepts either !pto.tensor_view or the memref
+    it is lowered to.
+  }];
+  let arguments = (ins
+    TensorViewLikeOrMemRef:$tensor_view,
     Index:$dim_index
   );
   let results = (outs Index:$result);
@@ -2430,8 +2478,10 @@ def SetFlagOp : PTO_Op<"set_flag"> {
     PTO_EventAttr:$event_id
   );
   let results = (outs);
-  let assemblyFormat = [{
-    `[` $src_pipe `,` $dst_pipe `,` $event_id `]` attr-dict
+  let extraClassDeclaration = [{
+    void print(::mlir::OpAsmPrinter &p);
+    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
+                                     ::mlir::OperationState &result);
   }];
 }
 
@@ -2443,8 +2493,10 @@ def WaitFlagOp : PTO_Op<"wait_flag"> {
     PTO_EventAttr:$event_id
   );
   let results = (outs);
-  let assemblyFormat = [{
-    `[` $src_pipe `,` $dst_pipe `,` $event_id `]` attr-dict
+  let extraClassDeclaration = [{
+    void print(::mlir::OpAsmPrinter &p);
+    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
+                                     ::mlir::OperationState &result);
   }];
 }
 
@@ -2478,6 +2530,9 @@ def WaitFlagDynOp : PTO_Op<"wait_flag_dyn"> {
 // Buffer-ID Synchronization (A5)
 //===----------------------------------------------------------------------===//
 
+def PTO_PipeLikeAttr
+    : AnyAttrOf<[PTO_PipeEventTypeAttr, PTO_SyncOpTypeAttr, PTO_PipeAttr]>;
+
 def GetBufOp : PTO_Op<"get_buf"> {
   let summary = "Acquire a buffer-id token for a sync op type (A5)";
   let description = [{
@@ -2494,7 +2549,7 @@ def GetBufOp : PTO_Op<"get_buf"> {
   }];
 
   let arguments = (ins
-    PTO_PipeEventTypeLikeAttr:$op_type,
+    PTO_PipeLikeAttr:$op_type,
     I32Attr:$buf_id,
     DefaultValuedAttr<I32Attr, "0">:$mode
   );
@@ -2503,8 +2558,10 @@ def GetBufOp : PTO_Op<"get_buf"> {
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `[` $op_type `,` $buf_id `]` attr-dict
+  let extraClassDeclaration = [{
+    void print(::mlir::OpAsmPrinter &p);
+    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
+                                     ::mlir::OperationState &result);
   }];
 }
 
@@ -2518,7 +2575,7 @@ def RlsBufOp : PTO_Op<"rls_buf"> {
   }];
 
   let arguments = (ins
-    PTO_PipeEventTypeLikeAttr:$op_type,
+    PTO_PipeLikeAttr:$op_type,
     I32Attr:$buf_id,
     DefaultValuedAttr<I32Attr, "0">:$mode
   );
@@ -2527,8 +2584,10 @@ def RlsBufOp : PTO_Op<"rls_buf"> {
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `[` $op_type `,` $buf_id `]` attr-dict
+  let extraClassDeclaration = [{
+    void print(::mlir::OpAsmPrinter &p);
+    static ::mlir::ParseResult parse(::mlir::OpAsmParser &parser,
+                                     ::mlir::OperationState &result);
   }];
 }
 
@@ -2621,6 +2680,71 @@ def SyncAllOp : PTO_Op<"syncall", [AttrSizedOperandSegments]> {
   let hasCustomAssemblyFormat = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// SIMD Bridge Ops
+//===----------------------------------------------------------------------===//
+
+def SimdTileToMemrefOp : PTO_Op<"simd.tile_to_memref", [Pure]> {
+  let summary = "Bridge cast from tile_buf to memref in OP-Lib bodies.";
+  let description = [{
+    This op is the canonical bridge marker for OP-Lib templates to expose a
+    memref view from tile-like values while keeping external ABI as
+    !pto.tile_buf.
+    In tile_buf world, src is !pto.tile_buf and dst is the corresponding
+    memref bridge type.
+    After memref-world lowering, src may already be memref and this op remains
+    as a marker for backend lowering (EmitC) to materialize tile data access.
+  }];
+
+  let arguments = (ins TileBufOrMemRef:$src);
+  let results = (outs AnyMemRef:$dst);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `to` type($dst)
+  }];
+}
+
+// ---------------------------------------------------------------------------
+// TileBuf intrinsics — used in TileLang DSL-generated template functions.
+// These ops extract memref address and valid shape from tile_buf parameters.
+// After inline, FoldTileBufIntrinsics resolves them to concrete values.
+// ---------------------------------------------------------------------------
+
+def TileValidRowsOp : PTO_Op<"tile_valid_rows", [Pure]> {
+  let summary = "Extract valid row count from a tile_buf.";
+  let description = [{
+    Returns the valid row count (v_row) of a `tile_buf` as an `index` value.
+    When the tile_buf has a static v_row, FoldTileBufIntrinsics folds this
+    into `arith.constant`. When v_row is dynamic (`?`), the fold resolves
+    it to the runtime index value carried by the tile_buf.
+  }];
+
+  let arguments = (ins TileBufType:$src);
+  let results = (outs Index:$result);
+
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `->` type($result)
+  }];
+}
+
+def TileValidColsOp : PTO_Op<"tile_valid_cols", [Pure]> {
+  let summary = "Extract valid column count from a tile_buf.";
+  let description = [{
+    Returns the valid column count (v_col) of a `tile_buf` as an `index` value.
+    When the tile_buf has a static v_col, FoldTileBufIntrinsics folds this
+    into `arith.constant`. When v_col is dynamic (`?`), the fold resolves
+    it to the runtime index value carried by the tile_buf.
+  }];
+
+  let arguments = (ins TileBufType:$src);
+  let results = (outs Index:$result);
+
+  let assemblyFormat = [{
+    $src attr-dict `:` qualified(type($src)) `->` type($result)
+  }];
+}
 
 //===----------------------------------------------------------------------===//
 // FFT Configuration Operation
@@ -3853,7 +3977,8 @@ def TDivSOp : PTO_TOp<"tdivs", [
   let arguments = (ins
     AnyType:$src,
     AnyType:$scalar,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    DefaultValuedAttr<PTO_DivPrecisionAttr, "::mlir::pto::DivPrecision::Default">:$precisionType
   );
 
   let results = (outs);

@@ -12,11 +12,25 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 add_mlir_dialect_library(PTOTransforms
+  VPTOLLVMEmitter.cpp
+  VPTOLLVMEmitterHelper.cpp
+  VPTOPtrNormalize.cpp
+  VPTOPtrCastCleanup.cpp
+  VPTOExpandWrapperOps.cpp
+  PTOVPTOPtrBoundary.cpp
+  VPTOBufferMaterialization.cpp
+  PTOValidateVPTOIR.cpp
+  PTOInferVPTOVecScope.cpp
+
   InsertSync/PTOInsertSync.cpp
   PTOInjectBarrierAllSync.cpp
   InsertSync/InsertSyncDebug.cpp
   PTOViewToMemref.cpp
   PTOValidateIntToPtrUses.cpp
+  ExpandTileOp.cpp
+  FoldTileBufIntrinsics.cpp
+  PTOLowerToOpLibCalls.cpp
+  PTOInstantiateAndInlineOpLib.cpp
   PTOToEmitC.cpp
   Utils.cpp
   OptMemPlanForPipeline.cpp
@@ -34,6 +48,8 @@ add_mlir_dialect_library(PTOTransforms
   PTOInferValidatePipeInitPass.cpp
   PTOResolveReservedBuffersPass.cpp
   PTOWrapFunctionsInSectionsPass.cpp
+  VPTONormalizeContainer.cpp
+  VPTOSplitCVModule.cpp
   InsertSync/PTOIRTranslator.cpp
   InsertSync/SyncCommon.cpp
   InsertSync/InsertSyncAnalysis.cpp
@@ -65,6 +81,9 @@ add_mlir_dialect_library(PTOTransforms
   PTOPassesIncGen
   PTOOpsIncGen
 
+  LINK_COMPONENTS
+  Analysis
+
   LINK_LIBS PUBLIC
   PTOIR
   MLIRIR
@@ -78,8 +97,15 @@ add_mlir_dialect_library(PTOTransforms
   MLIRTransformUtils
   MLIRTransforms
   MLIRTensorDialect
+  MLIRSCFDialect
+  MLIRVectorDialect
+  MLIRParser
   MLIRSCFToEmitC
   MLIRSCFDialect
+  MLIRSCFToControlFlow
+  MLIRConvertToLLVMPass
+  MLIRTargetLLVMIRExport
+  MLIRToLLVMIRTranslationRegistration
 )
 
 install(TARGETS PTOTransforms

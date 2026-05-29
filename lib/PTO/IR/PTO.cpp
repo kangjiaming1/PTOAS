@@ -185,6 +185,9 @@ static LogicalResult verifyArithmeticElemTypeForArch(
     Operation *op, Type elemTy, PTOArch targetArch, bool allowInt8OnA5,
     bool allowBf16OnA5, StringRef a2a3Error, StringRef a5Error);
 static bool isRowMajorTileBuf(Type ty);
+static ParseResult parseLegacyOrAttrPipe(OpAsmParser &parser, PipeAttr &attr);
+static ParseResult parseLegacyOrAttrEvent(OpAsmParser &parser, EventAttr &attr);
+static ParseResult parseI32LiteralAttr(OpAsmParser &parser, IntegerAttr &attr);
 
 #define GET_ENUM_CLASSES
 #include "PTO/IR/PTOEnums.cpp.inc"
@@ -390,6 +393,49 @@ static LogicalResult dispatchVerifierByArch(Operation *op, FnA2A3 &&verifyA2A3,
   }
   return failure();
 }
+static std::optional<pto::AddressSpace> parsePtrAddressSpaceKeyword(StringRef keyword) {
+  return llvm::StringSwitch<std::optional<pto::AddressSpace>>(keyword)
+      .Case("gm", pto::AddressSpace::GM)
+      .Case("mat", pto::AddressSpace::MAT)
+      .Case("l1", pto::AddressSpace::MAT)
+      .Case("left", pto::AddressSpace::LEFT)
+      .Case("l0a", pto::AddressSpace::LEFT)
+      .Case("right", pto::AddressSpace::RIGHT)
+      .Case("l0b", pto::AddressSpace::RIGHT)
+      .Case("acc", pto::AddressSpace::ACC)
+      .Case("l0c", pto::AddressSpace::ACC)
+      .Case("vec", pto::AddressSpace::VEC)
+      .Case("ub", pto::AddressSpace::VEC)
+      .Case("bias", pto::AddressSpace::BIAS)
+      .Case("bt", pto::AddressSpace::BIAS)
+      .Case("scaling", pto::AddressSpace::SCALING)
+      .Case("fb", pto::AddressSpace::SCALING)
+      .Default(std::nullopt);
+}
+
+static StringRef printPtrAddressSpaceKeyword(pto::AddressSpace space) {
+  switch (space) {
+  case pto::AddressSpace::GM:
+  case pto::AddressSpace::Zero:
+    return "gm";
+  case pto::AddressSpace::MAT:
+    return "l1";
+  case pto::AddressSpace::LEFT:
+    return "l0a";
+  case pto::AddressSpace::RIGHT:
+    return "l0b";
+  case pto::AddressSpace::ACC:
+    return "l0c";
+  case pto::AddressSpace::VEC:
+    return "ub";
+  case pto::AddressSpace::BIAS:
+    return "bt";
+  case pto::AddressSpace::SCALING:
+    return "fb";
+  default:
+    return {};
+  }
+}
 
 static ParseResult parseSyncEventOpCommon(OpAsmParser &parser,
                                           OperationState &result,
@@ -499,17 +545,23 @@ static void printSyncEventOpCommon(OpAsmPrinter &p, Operation *op,
     mlir::Type elem;
     if (failed(parser.parseType(elem)))
       return mlir::Type();
+    auto memorySpace = pto::AddressSpaceAttr::get(ctx, pto::AddressSpace::GM);
     if (succeeded(parser.parseOptionalComma())) {
-      // ptr no longer accepts an address space; consume the attr for recovery.
-      mlir::Attribute memorySpace;
-      (void)parser.parseAttribute(memorySpace);
-      parser.emitError(parser.getCurrentLocation(),
-                       "!pto.ptr no longer accepts address space; use !pto.ptr<elem>");
-      return mlir::Type();
+      StringRef memorySpaceKeyword;
+      if (failed(parser.parseKeyword(&memorySpaceKeyword)))
+        return mlir::Type();
+      auto parsed = parsePtrAddressSpaceKeyword(memorySpaceKeyword);
+      if (!parsed) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "!pto.ptr address space must be one of "
+                         "`gm|ub|mat|l1|left|l0a|right|l0b|acc|l0c|vec|bias|bt|scaling|fb`");
+        return mlir::Type();
+      }
+      memorySpace = pto::AddressSpaceAttr::get(ctx, *parsed);
     }
     if (failed(parser.parseGreater()))
       return mlir::Type();
-    return mlir::pto::PtrType::get(ctx, elem);
+    return mlir::pto::PtrType::get(ctx, elem, memorySpace);
   }
 
   if (head == "pto.tensor_view") {
@@ -533,6 +585,41 @@ mlir::Type TensorViewType::parse(::mlir::AsmParser &parser) {
 
 void TensorViewType::print(::mlir::AsmPrinter &printer) const {
   printShapeAndElem(printer, getShape(), getElementType());
+}
+
+mlir::Type PtrType::parse(::mlir::AsmParser &parser) {
+  Type elementType;
+  if (failed(parser.parseLess()) || failed(parser.parseType(elementType)))
+    return {};
+
+  auto memorySpace =
+      pto::AddressSpaceAttr::get(parser.getContext(), pto::AddressSpace::GM);
+  if (succeeded(parser.parseOptionalComma())) {
+    StringRef memorySpaceKeyword;
+    if (failed(parser.parseKeyword(&memorySpaceKeyword)))
+      return {};
+    auto parsed = parsePtrAddressSpaceKeyword(memorySpaceKeyword);
+    if (!parsed) {
+      parser.emitError(parser.getCurrentLocation(),
+                       "!pto.ptr address space must be one of "
+                       "`gm|ub|mat|l1|left|l0a|right|l0b|acc|l0c|vec|bias|bt|scaling|fb`");
+      return {};
+    }
+    memorySpace = pto::AddressSpaceAttr::get(parser.getContext(), *parsed);
+  }
+
+  if (failed(parser.parseGreater()))
+    return {};
+  return PtrType::get(parser.getContext(), elementType, memorySpace);
+}
+
+void PtrType::print(::mlir::AsmPrinter &printer) const {
+  printer << "<" << getElementType();
+  StringRef memorySpaceKeyword =
+      printPtrAddressSpaceKeyword(getMemorySpace().getAddressSpace());
+  if (!memorySpaceKeyword.empty())
+    printer << ", " << memorySpaceKeyword;
+  printer << ">";
 }
 
 //===----------------------------------------------------------------------===//
@@ -2127,6 +2214,43 @@ LogicalResult mlir::pto::LocalArraySetOp::verify() {
   return success();
 }
 
+LogicalResult mlir::pto::CastPtrOp::verify() {
+  Type inputType = getInput().getType();
+  Type resultType = getResult().getType();
+
+  auto inputPtrType = dyn_cast<mlir::pto::PtrType>(inputType);
+  auto resultPtrType = dyn_cast<mlir::pto::PtrType>(resultType);
+  auto inputMemRefType = dyn_cast<BaseMemRefType>(inputType);
+  bool inputIsInteger = isa<IntegerType>(inputType);
+  bool resultIsInteger = isa<IntegerType>(resultType);
+
+  if (!inputPtrType && !inputMemRefType && !inputIsInteger)
+    return emitOpError("input must be an integer, memref, or !pto.ptr<...>");
+  if (!resultPtrType && !resultIsInteger)
+    return emitOpError("result must be an integer or !pto.ptr<...>");
+
+  if (inputIsInteger && resultIsInteger)
+    return emitOpError("integer-to-integer cast is not a ptr cast");
+
+  if (inputMemRefType && resultIsInteger)
+    return emitOpError("memref-to-integer cast is unsupported");
+
+  if (inputMemRefType && resultPtrType) {
+    auto memrefSpace = dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(
+        inputMemRefType.getMemorySpace());
+    auto resultSpace = resultPtrType.getMemorySpace();
+    if (memrefSpace && memrefSpace != resultSpace)
+      return emitOpError("memref-to-ptr cast must stay within the same PTO memory space");
+  }
+
+  if (inputPtrType && resultPtrType &&
+      inputPtrType.getMemorySpace() != resultPtrType.getMemorySpace()) {
+    return emitOpError("ptr-to-ptr cast must stay within the same PTO memory space");
+  }
+
+  return success();
+}
+
 
 
 
@@ -2149,6 +2273,8 @@ void PTODialect::initialize() {
 
 
 AddressSpaceAttr mlir::pto::getPTOAddressSpaceAttr(Type type) {
+  if (auto ptrType = dyn_cast<PtrType>(type))
+    return ptrType.getMemorySpace();
   auto memRefType = dyn_cast<BaseMemRefType>(type);
   if (!memRefType)
     return {};
@@ -2160,7 +2286,7 @@ AddressSpaceAttr mlir::pto::getPTOAddressSpaceAttr(Type type) {
 
 bool mlir::pto::isScalarPtrOrMemRef(Type type) {
   if (auto pty = dyn_cast<mlir::pto::PtrType>(type))
-    return true;
+    return static_cast<bool>(pty);
   if (auto memTy = dyn_cast<MemRefType>(type))
     return isGmAddressSpaceAttr(memTy.getMemorySpace());
   return false;
@@ -2479,6 +2605,21 @@ LogicalResult TLoadOp::verify() {
           pad != static_cast<int32_t>(pto::PadValue::Zero))
         return emitOpError("expects A5 i64/u64 tload dst pad to be null or zero");
     }
+
+    auto dstSpace = getPTOMemorySpaceEnum(dstTile);
+    if (dstSpace && *dstSpace == pto::AddressSpace::VEC) {
+      int32_t bl = dstTile.getBLayoutValueI32();
+      int32_t sl = dstTile.getSLayoutValueI32();
+      bool isND = (bl == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+                   sl == static_cast<int32_t>(pto::SLayout::NoneBox));
+      bool isDN = (bl == static_cast<int32_t>(pto::BLayout::ColMajor) &&
+                   sl == static_cast<int32_t>(pto::SLayout::NoneBox));
+      bool isNZ = (bl == static_cast<int32_t>(pto::BLayout::ColMajor) &&
+                   sl == static_cast<int32_t>(pto::SLayout::RowMajor));
+      if (!isND && !isDN && !isNZ)
+        return emitOpError("expects A5 tload vec dst layout to be ND, DN, or NZ");
+    }
+
     return success();
   };
 
@@ -2951,6 +3092,19 @@ LogicalResult TStoreOp::verify() {
         return emitOpError("expects A5 vec tstore src element type to be i8/i16/i32/i64/f16/bf16/f32/f8/hif8/fp4");
       if (getElemByteSize(srcElem) != getElemByteSize(dstElem))
         return emitOpError("expects A5 vec tstore src and dst element types to have the same bitwidth");
+
+      int32_t bl = srcTile.getBLayoutValueI32();
+      int32_t sl = srcTile.getSLayoutValueI32();
+      bool isND = (bl == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+                   sl == static_cast<int32_t>(pto::SLayout::NoneBox));
+      bool isDN = (bl == static_cast<int32_t>(pto::BLayout::ColMajor) &&
+                   sl == static_cast<int32_t>(pto::SLayout::NoneBox));
+      bool isNZ = (bl == static_cast<int32_t>(pto::BLayout::ColMajor) &&
+                   sl == static_cast<int32_t>(pto::SLayout::RowMajor));
+      auto srcShape = srcTile.getShape();
+      bool isSpecialCase = (srcShape.size() == 2 && (srcShape[0] == 1 || srcShape[1] == 1));
+      if (!isSpecialCase && !isND && !isDN && !isNZ)
+        return emitOpError("expects A5 vec tstore src layout to be ND, DN, or NZ (or special case with 1 row/col)");
       return success();
     }
 
@@ -3678,6 +3832,27 @@ static LogicalResult verifyPartialValidPattern(Operation *op, Type src0Ty,
   return success();
 }
 
+static LogicalResult verifyPartialValidPatternLoose(Operation *op, Type src0Ty,
+                                                    Type src1Ty, Type dstTy) {
+  auto src0Valid = getValidShapeVec(src0Ty);
+  auto src1Valid = getValidShapeVec(src1Ty);
+  auto dstValid = getValidShapeVec(dstTy);
+  if (src0Valid.size() != 2 || src1Valid.size() != 2 || dstValid.size() != 2)
+    return op->emitOpError("expects src0, src1, and dst to have rank-2 valid_shape");
+
+  auto lessEqualKnown = [](int64_t lhs, int64_t rhs) {
+    return lhs == ShapedType::kDynamic || rhs == ShapedType::kDynamic || lhs <= rhs;
+  };
+
+  for (unsigned i = 0; i < 2; ++i) {
+    if (!lessEqualKnown(src0Valid[i], dstValid[i]) ||
+        !lessEqualKnown(src1Valid[i], dstValid[i]))
+      return op->emitOpError(
+          "expects src0/src1 valid_shape to be less than or equal to dst valid_shape");
+  }
+  return success();
+}
+
 [[maybe_unused]] static bool hasKnownZeroValidRegion(Type ty) {
   auto valid = getValidShapeVec(ty);
   if (valid.size() != 2)
@@ -3760,19 +3935,20 @@ verifyNumericScalarTileOpCommon(Operation *op, Type srcTy, Type dstTy,
 
 static FailureOr<Type>
 verifyShiftLikeBinaryTileOpCommon(Operation *op, Type src0Ty, Type src1Ty,
-                                  Type dstTy) {
+                                   Type dstTy) {
   if (failed(verifyTileBufCommon(op, src0Ty, "src0")) ||
       failed(verifyTileBufCommon(op, src1Ty, "src1")) ||
       failed(verifyTileBufCommon(op, dstTy, "dst")))
     return failure();
   Type e0 = getElemTy(src0Ty);
   Type e1 = getElemTy(src1Ty);
-  if (!e0 || !e1) {
+  Type ed = getElemTy(dstTy);
+  if (!e0 || !e1 || !ed) {
     op->emitOpError("failed to get element type for operands");
     return failure();
   }
-  if (e0 != e1) {
-    op->emitOpError("expects src0 and src1 to have the same element type");
+  if (e0 != e1 || e0 != ed) {
+    op->emitOpError("expects src0, src1, and dst to have the same element type");
     return failure();
   }
   if (!isRowMajorTileBuf(src0Ty) || !isRowMajorTileBuf(src1Ty) ||
@@ -3960,7 +4136,6 @@ static LogicalResult verifyVecTileStorage(Operation *op, Type ty, StringRef name
     return op->emitOpError() << "expects " << name << " to be in the vec address space";
   return success();
 }
-
 static LogicalResult verifyVecTileCommonA2A3(Operation *op, Type ty,
                                              StringRef name) {
   if (failed(verifyTileBufCommon(op, ty, name)))
@@ -4336,7 +4511,7 @@ LogicalResult pto::TAddSOp::verify() {
       "expects A2/A3 tadds element type to be i32/i16/f16/f32",
       "expects A5 tadds element type to be i32/i16/i8/f16/bf16/f32",
       /*requireValidRowsEqualOnA2A3=*/true,
-      /*requireValidRowsEqualOnA5=*/false);
+      /*requireValidRowsEqualOnA5=*/true);
 }
 
 LogicalResult pto::TAxpyOp::verify() {
@@ -6324,7 +6499,7 @@ mlir::LogicalResult mlir::pto::TLogOp::verify() {
   auto elemTy = getElemTy(srcTy);
   if (!(elemTy.isF16() || elemTy.isF32()))
     return emitOpError() << "expects element type to be f16 or f32";
-  return mlir::success();
+  return success();
 }
 
 mlir::LogicalResult mlir::pto::TLReluOp::verify() {
@@ -6399,7 +6574,7 @@ mlir::LogicalResult mlir::pto::TMinSOp::verify() {
       "expects A2/A3 tmins element type to be i32/i16/f16/f32",
       "expects A5 tmins element type to be i32/i16/i8/f16/bf16/f32",
       /*requireValidRowsEqualOnA2A3=*/true,
-      /*requireValidRowsEqualOnA5=*/false);
+      /*requireValidRowsEqualOnA5=*/true);
 }
 
 mlir::LogicalResult mlir::pto::TMovOp::verify() {
@@ -6661,14 +6836,19 @@ static LogicalResult verifyBufSyncOp(Operation *op, Attribute opTypeAttr,
   if (!opTypeAttr)
     return op->emitOpError("expects 'op_type' attribute");
 
-  auto opTypeOr = parseSyncOpTypeLikeAttr(opTypeAttr);
-  if (failed(opTypeOr)) {
-    auto diag =
-        op->emitOpError("expects 'op_type' to be pipe_event_type/sync_op_type, got ");
-    diag << opTypeAttr;
-    return failure();
+  pto::PIPE pipe = pto::PIPE::PIPE_UNASSIGNED;
+  if (auto pipeAttr = dyn_cast<PipeAttr>(opTypeAttr)) {
+    pipe = pipeAttr.getPipe();
+  } else {
+    auto opTypeOr = parseSyncOpTypeLikeAttr(opTypeAttr);
+    if (failed(opTypeOr)) {
+      auto diag = op->emitOpError(
+          "expects 'op_type' to be pipe_event_type/sync_op_type/pipe, got ");
+      diag << opTypeAttr;
+      return failure();
+    }
+    pipe = mapSyncOpTypeToPipe(*opTypeOr);
   }
-  pto::PIPE pipe = mapSyncOpTypeToPipe(*opTypeOr);
   if (!isConcreteSyncPipe(pipe))
     return op->emitOpError("expects 'op_type' to map to a concrete pipe, not PIPE_ALL/PIPE_UNASSIGNED");
 
@@ -6695,6 +6875,261 @@ LogicalResult GetBufOp::verify() {
 LogicalResult RlsBufOp::verify() {
   return verifyBufSyncOp(getOperation(), getOpTypeAttr(), getBufIdAttr(),
                          getModeAttr());
+}
+
+static ParseResult parseLegacyOrAttrMemBar(OpAsmParser &parser,
+                                           MemBarAttr &attr) {
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    auto kind = symbolizeMemBarKind(token);
+    if (!kind)
+      return parser.emitError(loc) << "invalid membar token: " << token;
+    attr = MemBarAttr::get(parser.getContext(), *kind);
+    return success();
+  }
+
+  Attribute parsed;
+  if (failed(parser.parseAttribute(parsed)))
+    return failure();
+  auto memBarAttr = dyn_cast<MemBarAttr>(parsed);
+  if (!memBarAttr)
+    return parser.emitError(loc, "expected membar attribute");
+  attr = memBarAttr;
+  return success();
+}
+
+static void printLegacyOrAttrMemBar(OpAsmPrinter &p, MemBarAttr kind,
+                                    ArrayRef<NamedAttribute> attrs) {
+  p << ' ' << '"' << stringifyMemBarKind(kind.getKind()) << '"';
+  p.printOptionalAttrDict(attrs, {"kind"});
+}
+
+static ParseResult parseLegacyOrAttrPipe(OpAsmParser &parser, PipeAttr &attr) {
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    auto pipe = symbolizePIPE(token);
+    if (!pipe)
+      return parser.emitError(loc) << "invalid pipe token: " << token;
+    attr = PipeAttr::get(parser.getContext(), *pipe);
+    return success();
+  }
+
+  if (succeeded(parser.parseOptionalLess())) {
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword) || parser.parseGreater())
+      return failure();
+    auto pipe = symbolizePIPE(keyword);
+    if (!pipe)
+      return parser.emitError(loc) << "invalid pipe token: " << keyword;
+    attr = PipeAttr::get(parser.getContext(), *pipe);
+    return success();
+  }
+
+  Attribute parsed;
+  if (failed(parser.parseAttribute(parsed)))
+    return failure();
+  auto pipeAttr = dyn_cast<PipeAttr>(parsed);
+  if (!pipeAttr)
+    return parser.emitError(loc, "expected pipe attribute");
+  attr = pipeAttr;
+  return success();
+}
+
+static ParseResult parseLegacyOrAttrEvent(OpAsmParser &parser, EventAttr &attr) {
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    auto event = symbolizeEVENT(token);
+    if (!event)
+      return parser.emitError(loc) << "invalid event token: " << token;
+    attr = EventAttr::get(parser.getContext(), *event);
+    return success();
+  }
+
+  if (succeeded(parser.parseOptionalLess())) {
+    StringRef keyword;
+    if (parser.parseKeyword(&keyword) || parser.parseGreater())
+      return failure();
+    auto event = symbolizeEVENT(keyword);
+    if (!event)
+      return parser.emitError(loc) << "invalid event token: " << keyword;
+    attr = EventAttr::get(parser.getContext(), *event);
+    return success();
+  }
+
+  Attribute parsed;
+  if (failed(parser.parseAttribute(parsed)))
+    return failure();
+  auto eventAttr = dyn_cast<EventAttr>(parsed);
+  if (!eventAttr)
+    return parser.emitError(loc, "expected event attribute");
+  attr = eventAttr;
+  return success();
+}
+
+static ParseResult parseI32LiteralAttr(OpAsmParser &parser, IntegerAttr &attr) {
+  auto loc = parser.getCurrentLocation();
+  int64_t value = 0;
+  if (failed(parser.parseInteger(value)))
+    return failure();
+  if (value < std::numeric_limits<int32_t>::min() ||
+      value > std::numeric_limits<int32_t>::max())
+    return parser.emitError(loc, "expected 32-bit integer literal");
+  attr = IntegerAttr::get(IntegerType::get(parser.getContext(), 32), value);
+  return success();
+}
+
+static void printLegacySyncTriplet(OpAsmPrinter &p, PipeAttr srcPipe,
+                                   PipeAttr dstPipe, EventAttr eventId,
+                                   ArrayRef<NamedAttribute> attrs) {
+  p << "[<" << stringifyPIPE(srcPipe.getPipe()) << ">, <"
+    << stringifyPIPE(dstPipe.getPipe()) << ">, <"
+    << stringifyEVENT(eventId.getEvent()) << ">]";
+  p.printOptionalAttrDict(attrs, {"src_pipe", "dst_pipe", "event_id"});
+}
+
+ParseResult SetFlagOp::parse(OpAsmParser &parser, OperationState &result) {
+  PipeAttr srcPipe;
+  PipeAttr dstPipe;
+  EventAttr eventId;
+  if (parser.parseLSquare() || parseLegacyOrAttrPipe(parser, srcPipe) ||
+      parser.parseComma() || parseLegacyOrAttrPipe(parser, dstPipe) ||
+      parser.parseComma() || parseLegacyOrAttrEvent(parser, eventId) ||
+      parser.parseRSquare())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute("src_pipe", srcPipe);
+  result.addAttribute("dst_pipe", dstPipe);
+  result.addAttribute("event_id", eventId);
+  return success();
+}
+
+void SetFlagOp::print(OpAsmPrinter &p) {
+  printLegacySyncTriplet(p, getSrcPipe(), getDstPipe(), getEventId(),
+                         (*this)->getAttrs());
+}
+
+ParseResult WaitFlagOp::parse(OpAsmParser &parser, OperationState &result) {
+  PipeAttr srcPipe;
+  PipeAttr dstPipe;
+  EventAttr eventId;
+  if (parser.parseLSquare() || parseLegacyOrAttrPipe(parser, srcPipe) ||
+      parser.parseComma() || parseLegacyOrAttrPipe(parser, dstPipe) ||
+      parser.parseComma() || parseLegacyOrAttrEvent(parser, eventId) ||
+      parser.parseRSquare())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute("src_pipe", srcPipe);
+  result.addAttribute("dst_pipe", dstPipe);
+  result.addAttribute("event_id", eventId);
+  return success();
+}
+
+void WaitFlagOp::print(OpAsmPrinter &p) {
+  printLegacySyncTriplet(p, getSrcPipe(), getDstPipe(), getEventId(),
+                         (*this)->getAttrs());
+}
+
+ParseResult MemBarOp::parse(OpAsmParser &parser, OperationState &result) {
+  MemBarAttr kind;
+  if (parseLegacyOrAttrMemBar(parser, kind))
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute("kind", kind);
+  return success();
+}
+
+void MemBarOp::print(OpAsmPrinter &p) {
+  printLegacyOrAttrMemBar(p, getKind(), (*this)->getAttrs());
+}
+
+static ParseResult parseBufSyncOp(OpAsmParser &parser, OperationState &result) {
+  Attribute opTypeAttr;
+  IntegerAttr bufIdAttr;
+  IntegerAttr modeAttr;
+
+  auto loc = parser.getCurrentLocation();
+  std::string token;
+  if (succeeded(parser.parseOptionalString(&token))) {
+    if (auto pipe = symbolizePIPE(token))
+      opTypeAttr = PipeAttr::get(parser.getContext(), *pipe);
+    else if (auto opType = symbolizeSyncOpType(token))
+      opTypeAttr = PipeEventTypeAttr::get(parser.getContext(), *opType);
+    else
+      return parser.emitError(loc) << "invalid get_buf/rls_buf token: " << token;
+
+    if (parser.parseComma() || parseI32LiteralAttr(parser, bufIdAttr))
+      return failure();
+    if (succeeded(parser.parseOptionalComma())) {
+      if (parseI32LiteralAttr(parser, modeAttr))
+        return failure();
+    } else {
+      modeAttr = IntegerAttr::get(IntegerType::get(parser.getContext(), 32), 0);
+    }
+  } else if (succeeded(parser.parseOptionalLSquare())) {
+    if (parser.parseAttribute(opTypeAttr) || parser.parseComma() ||
+        parseI32LiteralAttr(parser, bufIdAttr))
+      return failure();
+    if (succeeded(parser.parseOptionalComma())) {
+      if (parseI32LiteralAttr(parser, modeAttr))
+        return failure();
+    } else {
+      modeAttr = IntegerAttr::get(IntegerType::get(parser.getContext(), 32), 0);
+    }
+    if (parser.parseRSquare())
+      return failure();
+  } else {
+    return parser.emitError(loc, "expected string pipe/op_type or '['");
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+  result.addAttribute("op_type", opTypeAttr);
+  result.addAttribute("buf_id", bufIdAttr);
+  result.addAttribute("mode", modeAttr);
+  return success();
+}
+
+static void printBufSyncOp(OpAsmPrinter &p, Attribute opTypeAttr,
+                           IntegerAttr bufIdAttr, IntegerAttr modeAttr,
+                           ArrayRef<NamedAttribute> attrs) {
+  if (auto pipeAttr = dyn_cast<PipeAttr>(opTypeAttr)) {
+    p << " \"" << stringifyPIPE(pipeAttr.getPipe()) << "\", "
+      << bufIdAttr.getInt() << ", " << modeAttr.getInt();
+  } else if (auto pipeEventType = dyn_cast<PipeEventTypeAttr>(opTypeAttr)) {
+    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
+      << modeAttr.getInt() << "]";
+  } else if (auto syncOpType = dyn_cast<SyncOpTypeAttr>(opTypeAttr)) {
+    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
+      << modeAttr.getInt() << "]";
+  } else {
+    p << "[" << opTypeAttr << ", " << bufIdAttr.getInt() << ", "
+      << modeAttr.getInt() << "]";
+  }
+  p.printOptionalAttrDict(attrs, {"op_type", "buf_id", "mode"});
+}
+
+ParseResult GetBufOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseBufSyncOp(parser, result);
+}
+
+void GetBufOp::print(OpAsmPrinter &p) {
+  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getModeAttr(),
+                 (*this)->getAttrs());
+}
+
+ParseResult RlsBufOp::parse(OpAsmParser &parser, OperationState &result) {
+  return parseBufSyncOp(parser, result);
+}
+
+void RlsBufOp::print(OpAsmPrinter &p) {
+  printBufSyncOp(p, getOpTypeAttr(), getBufIdAttr(), getModeAttr(),
+                 (*this)->getAttrs());
 }
 // ---- TOp ----
 LogicalResult TGemvBiasOp::verify() {
@@ -7397,7 +7832,7 @@ mlir::LogicalResult mlir::pto::TMulSOp::verify() {
       "expects A2/A3 tmuls element type to be i32/i16/f16/f32",
       "expects A5 tmuls element type to be i32/i16/i8/f16/bf16/f32",
       /*requireValidRowsEqualOnA2A3=*/true,
-      /*requireValidRowsEqualOnA5=*/false);
+      /*requireValidRowsEqualOnA5=*/true);
 }
 
 mlir::LogicalResult mlir::pto::TShlSOp::verify() {
@@ -7683,6 +8118,8 @@ mlir::LogicalResult mlir::pto::TPartAddOp::verify() {
     auto d = getShapeVec(dstTy);
     if (s0.size() != 2 || s1.size() != 2 || d.size() != 2)
       return emitOpError() << "expects src0/src1/dst to be rank-2 (tile-shaped)";
+    if (failed(verifyPartialValidPatternLoose(*this, src0Ty, src1Ty, dstTy)))
+      return failure();
     return mlir::success();
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
@@ -7716,6 +8153,8 @@ mlir::LogicalResult mlir::pto::TPartMaxOp::verify() {
     if (!(e0.isInteger(32) || e0.isInteger(16) || e0.isInteger(8) ||
           e0.isF16() || e0.isBF16() || e0.isF32()))
       return emitOpError("expects A5 tpartmax element type to be i32/i16/i8/f16/bf16/f32");
+    if (failed(verifyPartialValidPatternLoose(*this, t0, t1, td)))
+      return failure();
     return mlir::success();
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
@@ -7749,6 +8188,8 @@ mlir::LogicalResult mlir::pto::TPartMinOp::verify() {
     if (!(e0.isInteger(32) || e0.isInteger(16) || e0.isInteger(8) ||
           e0.isF16() || e0.isBF16() || e0.isF32()))
       return emitOpError("expects A5 tpartmin element type to be i32/i16/i8/f16/bf16/f32");
+    if (failed(verifyPartialValidPatternLoose(*this, t0, t1, td)))
+      return failure();
     return mlir::success();
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
@@ -7875,6 +8316,8 @@ mlir::LogicalResult mlir::pto::TPartMulOp::verify() {
     if (s0.size() != 2 || s1.size() != 2 || d.size() != 2)
       return emitOpError()
              << "expects src0/src1/dst to be rank-2 (tile-shaped)";
+    if (failed(verifyPartialValidPatternLoose(*this, src0Ty, src1Ty, dstTy)))
+      return failure();
     return mlir::success();
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
@@ -9460,10 +9903,11 @@ mlir::LogicalResult mlir::pto::TSelSOp::verify() {
     FailureOr<Type> elemOr = verifyCommon();
     if (failed(elemOr))
       return failure();
+    Type tMask = getMask().getType();
     Type tSrc = getSrc().getType();
     Type tDst = getDst().getType();
-    if (!isRowMajorTileBuf(tSrc) || !isRowMajorTileBuf(tDst))
-      return emitOpError("expects src and dst to use row-major layout");
+    if (!isRowMajorTileBuf(tMask) || !isRowMajorTileBuf(tSrc) || !isRowMajorTileBuf(tDst))
+      return emitOpError("expects mask, src, and dst to use row-major layout");
     Type elem = *elemOr;
     bool ok = elem.isF16() || elem.isF32();
     if (auto it = mlir::dyn_cast<mlir::IntegerType>(elem))
@@ -9685,7 +10129,7 @@ mlir::LogicalResult mlir::pto::TSubSOp::verify() {
       "expects A2/A3 tsubs element type to be i32/i16/f16/f32",
       "expects A5 tsubs element type to be i32/i16/i8/f16/bf16/f32",
       /*requireValidRowsEqualOnA2A3=*/true,
-      /*requireValidRowsEqualOnA5=*/false);
+      /*requireValidRowsEqualOnA5=*/true);
 }
 
 
@@ -10693,6 +11137,151 @@ static LogicalResult computeInnerShape(TileBufConfigAttr cfg, Type elemTy,
     }
   }
   return failure();
+}
+
+static LogicalResult
+computeExpectedTileBufMemrefStrides(TileBufType tileTy,
+                                    SmallVectorImpl<int64_t> &expectedStrides) {
+  if (tileTy.getRank() != 2)
+    return failure();
+
+  ArrayRef<int64_t> shape = tileTy.getShape();
+  if (shape.size() != 2)
+    return failure();
+  if (shape[0] == ShapedType::kDynamic || shape[1] == ShapedType::kDynamic)
+    return failure();
+
+  auto cfg = tileTy.getConfigAttr();
+  if (!cfg)
+    cfg = TileBufConfigAttr::getDefault(tileTy.getContext());
+
+  int64_t innerRows = 1, innerCols = 1;
+  bool boxed = false;
+  int32_t bl = 0, sl = 0;
+  if (failed(computeInnerShape(cfg, tileTy.getElementType(), innerRows, innerCols,
+                               boxed, bl, sl)))
+    return failure();
+
+  expectedStrides.clear();
+  if (!boxed) {
+    if (bl == 1) {
+      expectedStrides.push_back(1);
+      expectedStrides.push_back(shape[0]);
+    } else {
+      expectedStrides.push_back(shape[1]);
+      expectedStrides.push_back(1);
+    }
+    return success();
+  }
+
+  if (bl == 1) {
+    if (sl != 1)
+      return failure();
+    expectedStrides.push_back(innerCols);
+    expectedStrides.push_back(shape[0]);
+    return success();
+  }
+
+  expectedStrides.push_back(shape[1]);
+  expectedStrides.push_back(innerRows);
+  return success();
+}
+
+mlir::LogicalResult mlir::pto::SimdTileToMemrefOp::verify() {
+  auto memTy = dyn_cast<MemRefType>(getDst().getType());
+  if (!memTy)
+    return emitOpError("expects result to be memref");
+
+  Type srcTy = getSrc().getType();
+  if (auto tileTy = dyn_cast<TileBufType>(srcTy)) {
+    if (memTy.getElementType() != tileTy.getElementType())
+      return emitOpError(
+          "expects memref element type to match tile_buf element type");
+
+    if (memTy.getMemorySpace() != tileTy.getMemorySpace())
+      return emitOpError(
+          "expects memref memory space to match tile_buf memory space");
+
+    if (memTy.getRank() != tileTy.getRank())
+      return emitOpError("expects memref rank to match tile_buf rank");
+
+    ArrayRef<int64_t> tileShape = tileTy.getShape();
+    ArrayRef<int64_t> validShape = tileTy.getValidShape();
+    ArrayRef<int64_t> memShape = memTy.getShape();
+    if (tileShape.size() != memShape.size())
+      return emitOpError(
+          "expects memref shape rank to match tile_buf shape rank");
+
+    if (validShape.size() != memShape.size())
+      return emitOpError(
+          "expects tile_buf valid shape rank to match memref shape rank");
+
+    for (unsigned i = 0; i < validShape.size(); ++i) {
+      int64_t expect = validShape[i];
+      if (expect < 0) {
+        if (memShape[i] >= 0 && memShape[i] != tileShape[i]) {
+          return emitOpError()
+                 << "expects memref dim " << i
+                 << " to be dynamic or match physical tile dim " << tileShape[i]
+                 << " because tile_buf valid dim is ?";
+        }
+        continue;
+      }
+
+      if (memShape[i] != expect) {
+        return emitOpError() << "expects memref dim " << i
+                             << " to match tile_buf valid dim; got "
+                             << memShape[i] << ", expected " << expect;
+      }
+    }
+
+    SmallVector<int64_t, 4> expectedStrides;
+    if (failed(computeExpectedTileBufMemrefStrides(tileTy, expectedStrides)))
+      return emitOpError("cannot infer expected strides from tile_buf layout");
+
+    SmallVector<int64_t, 4> memStrides;
+    int64_t memOffset = ShapedType::kDynamic;
+    if (failed(getStridesAndOffset(memTy, memStrides, memOffset)))
+      return emitOpError("expects memref to use strided layout");
+    if (memOffset != 0)
+      return emitOpError("expects memref offset to be 0");
+    if (memStrides.size() != expectedStrides.size())
+      return emitOpError("expects memref stride rank to match tile_buf rank");
+    for (unsigned i = 0; i < expectedStrides.size(); ++i) {
+      if (memStrides[i] != expectedStrides[i]) {
+        return emitOpError()
+               << "expects memref strides to match tile_buf layout; got "
+               << memStrides[i] << " at dim " << i << ", expected "
+               << expectedStrides[i];
+      }
+    }
+    return success();
+  }
+
+  auto srcMemTy = dyn_cast<MemRefType>(srcTy);
+  if (!srcMemTy)
+    return emitOpError("expects src to be !pto.tile_buf or memref");
+
+  if (srcMemTy.getElementType() != memTy.getElementType())
+    return emitOpError("expects src/result memref element types to match");
+
+  if (srcMemTy.getMemorySpace() != memTy.getMemorySpace())
+    return emitOpError("expects src/result memref memory spaces to match");
+
+  if (srcMemTy.getRank() != memTy.getRank())
+    return emitOpError("expects src/result memref ranks to match");
+
+  ArrayRef<int64_t> srcShape = srcMemTy.getShape();
+  ArrayRef<int64_t> dstShape = memTy.getShape();
+  for (unsigned i = 0; i < srcShape.size(); ++i) {
+    if (srcShape[i] >= 0 && dstShape[i] >= 0 && srcShape[i] != dstShape[i]) {
+      return emitOpError()
+             << "expects compatible src/result memref shapes; dim " << i
+             << " mismatches (" << srcShape[i] << " vs " << dstShape[i] << ")";
+    }
+  }
+
+  return success();
 }
 
 mlir::LogicalResult mlir::pto::SubViewOp::verify() {
@@ -13175,5 +13764,6 @@ void TFreeOp::getEffects(
 
 // [Include 必须放在最后]
 #include "PTO/IR/PTOInterfaces.cpp.inc"
+#include "PTO/IR/VPTOInterfaces.cpp.inc"
 #define GET_OP_CLASSES
 #include "PTO/IR/PTOOps.cpp.inc"
