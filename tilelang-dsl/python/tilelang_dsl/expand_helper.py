@@ -83,6 +83,7 @@ _MEMSPACE_MAP = {
     "right": MemorySpace.RIGHT,
     "acc": MemorySpace.ACC,
     "bias": MemorySpace.BIAS,
+    "scaling": MemorySpace.SCALING,
 }
 
 
@@ -209,7 +210,10 @@ def _parse_operand_specs(spec_text: str) -> list[dict]:
         if dtype is None:
             raise ValueError(f"operand-specs[{index}] has unsupported dtype {dtype_name!r}")
         if kind == "scalar":
-            specs.append({"kind": "scalar", "dtype": dtype})
+            scalar_spec = {"kind": "scalar", "dtype": dtype}
+            if "value" in raw:
+                scalar_spec["value"] = int(raw["value"])
+            specs.append(scalar_spec)
             continue
         if kind == "tile":
             shape = raw.get("shape")
@@ -344,6 +348,8 @@ def _build_positional_context_attrs(operand_specs: list[dict]) -> dict[str, obje
         attrs[f"{prefix}_kind"] = operand_spec["kind"]
         attrs[f"{prefix}_dtype"] = operand_spec["dtype"]
         if operand_spec["kind"] == "scalar":
+            if "value" in operand_spec:
+                attrs[f"{prefix}_value"] = operand_spec["value"]
             continue
         shape = tuple(operand_spec["shape"])
         attrs[f"{prefix}_shape"] = shape
@@ -422,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--memory-space",
         default="ub",
-        help="Memory space (ub/gm/mat/left/right/acc/bias)",
+        help="Memory space (ub/gm/mat/left/right/acc/bias/scaling)",
     )
     parser.add_argument(
         "--operand-specs",
