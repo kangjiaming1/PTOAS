@@ -31,6 +31,39 @@
 | `pto.bf16` | Brain float 16 | 16 |
 | `pto.f32` | Single precision float | 32 |
 
+### Low-Precision Types
+
+TileLang DSL v1 exposes low-precision element dtypes for storage and data
+movement surfaces. `f8e4m3` and `f8e5m2` are also supported as VPTO vreg and
+builtin-vector element types because the lower-level VPTO `!pto.vreg` verifier
+accepts MLIR FP8 element types.
+
+| DSL Type | Description | Storage Width |
+|----------|-------------|---------------|
+| `pto.hif8` | HiFloat8 format | 8 |
+| `pto.f8e4m3` | 8-bit float E4M3FN | 8 |
+| `pto.f8e5m2` | 8-bit float E5M2 | 8 |
+| `pto.f4e1m2x2` | Packed 4-bit float E1M2 pair | 8 |
+| `pto.f4e2m1x2` | Packed 4-bit float E2M1 pair | 8 |
+
+All of these dtypes may appear as `Tile`, `TensorView`,
+`PartitionTensorView`, and `pto.ptr(...)` element types. The lowered PTO IR
+preserves the target low-precision element type:
+
+```python
+src: pto.TensorView  # selected with dtypes=[(pto.f8e4m3, ...)]
+scratch = pto.Tile((8, 32), pto.hif8, pto.MemorySpace.UB)
+packed = pto.Tile((8, 32), pto.f4e2m1x2, pto.MemorySpace.UB)
+src_ptr = pto.ptr(pto.f8e4m3, pto.MemorySpace.UB)
+vec_ty = pto.vreg(pto.f8e4m3)  # !pto.vreg<256xf8E4M3FN>
+```
+
+Low-precision dtypes are not scalar element dtypes in DSL v1. For example,
+`pto.hif8(1.0)` and scalar parameter annotations such as `value: pto.f8e4m3`
+are rejected. `hif8` and packed FP4 types are also not accepted by
+`pto.vreg(...)` or `pto.vector(...)`; keep them on storage/ptr surfaces until
+an explicit conversion or reinterpret path is available.
+
 Python literals are automatically typed:
 - `bool` → `pto.i1`
 - `int` → Context-dependent (typically `pto.i32` or `pto.i64`)
@@ -150,7 +183,8 @@ lanes1 = pto.elements_per_vreg(pto.f32)  # 64
 ```
 
 Current TileLang DSL v1 vector lowering supports the 8/16/32-bit integer
-families (`i*`, `si*`, `ui*`) plus `f16`, `bf16`, and `f32` element types.
+families (`i*`, `si*`, `ui*`), `f16`, `bf16`, `f32`, and the MLIR FP8 dtypes
+`f8e4m3`/`f8e5m2`. `hif8` and packed FP4 types remain storage/ptr-only.
 
 ### Builtin Vector Type
 

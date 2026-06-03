@@ -82,6 +82,11 @@ _DSL_DTYPE_NAMES = frozenset(
         "f16",
         "bf16",
         "f32",
+        "hif8",
+        "f8e4m3",
+        "f8e5m2",
+        "f4e1m2x2",
+        "f4e2m1x2",
     }
 )
 

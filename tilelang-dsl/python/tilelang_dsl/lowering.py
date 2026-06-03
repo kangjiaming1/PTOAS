@@ -1184,7 +1184,7 @@ class _AuthoringRenderer:
             + f"{remaining_cols} = arith.subi {total_cols}, {col_value.name} : index"
         )
         subview_type = self._render_rank2_subview_result_type(
-            element_dtype=tile_type.element_dtype.name,
+            element_dtype=self._render_dtype_name(tile_type.element_dtype),
             memory_space=tile_type.memory_space or "ub",
         )
         subview_name = self._new_temp()
@@ -1282,7 +1282,7 @@ class _AuthoringRenderer:
 
         result_name = desired_name or self._new_temp()
         result_type_text = self._render_partition_tensor_view_type(
-            element_dtype=expr.type.element_dtype.name,
+            element_dtype=self._render_dtype_name(expr.type.element_dtype),
             shape=tuple("?" if dim is None else dim for dim in expr.type.extents),
         )
         into.append(
@@ -3519,7 +3519,7 @@ class _AuthoringRenderer:
             return value
         memref_type = _RenderedTextualType(
             self._render_memref_type(
-                element_dtype=value.type.element_dtype.name,
+                element_dtype=self._render_dtype_name(value.type.element_dtype),
                 shape=value.type.shape if value.type.shape is not None else ("?",) * value.type.rank,
                 memory_space=value.type.memory_space or "ub",
             )
@@ -3837,17 +3837,17 @@ class _AuthoringRenderer:
         if isinstance(ty, SemanticIndexType):
             return "index"
         if isinstance(ty, SemanticScalarType):
-            return ty.dtype.name
+            return self._render_dtype_name(ty.dtype)
         if isinstance(ty, SemanticPtrType):
-            return f"!pto.ptr<{ty.element_dtype.name}, {self._render_address_space_name(ty.memory_space)}>"
+            return f"!pto.ptr<{self._render_dtype_name(ty.element_dtype)}, {self._render_address_space_name(ty.memory_space)}>"
         if isinstance(ty, SemanticTensorViewType):
             return self._render_tensor_view_type(
-                element_dtype=ty.element_dtype.name,
+                element_dtype=self._render_dtype_name(ty.element_dtype),
                 shape=("?",) * ty.rank,
             )
         if isinstance(ty, SemanticPartitionTensorViewType):
             return self._render_partition_tensor_view_type(
-                element_dtype=ty.element_dtype.name,
+                element_dtype=self._render_dtype_name(ty.element_dtype),
                 shape=("?",) * ty.rank,
             )
         if isinstance(ty, SemanticTileType):
@@ -3857,11 +3857,21 @@ class _AuthoringRenderer:
         if isinstance(ty, SemanticMaskType):
             return f"!pto.mask<{ty.granularity}>"
         if isinstance(ty, SemanticVRegType):
-            return f"!pto.vreg<{ty.lanes}x{ty.element_dtype.name}>"
+            return f"!pto.vreg<{ty.lanes}x{self._render_dtype_name(ty.element_dtype)}>"
         if isinstance(ty, SemanticVectorType):
             dims = "x".join(str(dim) for dim in ty.shape)
-            return f"vector<{dims}x{ty.element_dtype.name}>"
+            return f"vector<{dims}x{self._render_dtype_name(ty.element_dtype)}>"
         raise NotImplementedError(f"unsupported semantic type {ty!r}")
+
+    def _render_dtype_name(self, dtype: ScalarType) -> str:
+        low_precision = {
+            "hif8": "!pto.hif8",
+            "f8e4m3": "f8E4M3FN",
+            "f8e5m2": "f8E5M2",
+            "f4e1m2x2": "!pto.f4E1M2x2",
+            "f4e2m1x2": "!pto.f4E2M1x2",
+        }
+        return low_precision.get(dtype.name, dtype.name)
 
     def _is_memref_like_type(self, ty: SemanticType) -> bool:
         return isinstance(ty, (SemanticTensorViewType, SemanticPartitionTensorViewType, SemanticTileType)) or (
@@ -3872,10 +3882,10 @@ class _AuthoringRenderer:
         if isinstance(ty, SemanticPtrType):
             return self._render_type(ty)
         if isinstance(ty, (SemanticTensorViewType, SemanticPartitionTensorViewType)):
-            return f"!pto.ptr<{ty.element_dtype.name}, gm>"
+            return f"!pto.ptr<{self._render_dtype_name(ty.element_dtype)}, gm>"
         if isinstance(ty, SemanticTileType):
             memory_space = ty.memory_space or "ub"
-            return f"!pto.ptr<{ty.element_dtype.name}, {self._render_address_space_name(memory_space)}>"
+            return f"!pto.ptr<{self._render_dtype_name(ty.element_dtype)}, {self._render_address_space_name(memory_space)}>"
         return self._render_type(ty)
 
     def _render_memref_type(
@@ -3931,7 +3941,7 @@ class _AuthoringRenderer:
             compact_suffix = f", compact={self._render_tile_buf_compact_mode(config.compact_mode)}"
         return (
             f"!pto.tile_buf<loc={self._render_tile_buf_loc(ty.memory_space or 'ub')}, "
-            f"dtype={ty.element_dtype.name}, rows={rows}, cols={cols}, "
+            f"dtype={self._render_dtype_name(ty.element_dtype)}, rows={rows}, cols={cols}, "
             f"v_row={self._render_tile_buf_dim(v_row)}, v_col={self._render_tile_buf_dim(v_col)}, "
             f"blayout={config.b_layout.value}, slayout={config.s_layout.value}, "
             f"fractal={config.s_fractal_size}, pad={self._render_tile_buf_pad_value(config.pad_value)}{compact_suffix}>"

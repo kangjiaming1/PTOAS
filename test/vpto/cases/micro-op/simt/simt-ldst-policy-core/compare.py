@@ -30,6 +30,11 @@ def compare_one(name: str, dtype) -> bool:
                 f"[ERROR] {name} mismatch at idx={idx}, "
                 f"golden=0x{int(golden[idx]):04x}, out=0x{int(out[idx]):04x}"
             )
+        elif dtype == np.uint8:
+            print(
+                f"[ERROR] {name} mismatch at idx={idx}, "
+                f"golden=0x{int(golden[idx]):02x}, out=0x{int(out[idx]):02x}"
+            )
         else:
             print(
                 f"[ERROR] {name} mismatch at idx={idx}, "
@@ -49,6 +54,8 @@ def main():
         and compare_one("v6", np.int64)
         and compare_one("v7", np.float32)
         and compare_one("v8", np.float64)
+        and compare_one("v9", np.uint8)
+        and compare_one("v10", np.uint8)
     )
     if not ok and strict:
         sys.exit(2)

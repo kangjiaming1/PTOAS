@@ -68,8 +68,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "LLVM_ROOT=${TOOL_CACHE}/llvm-project" >> "${GITHUB_ENV}"
-          echo "LLVM_DIR=${TOOL_CACHE}/llvm-project/llvm/build-shared" >> "${GITHUB_ENV}"
-          echo "MLIR_PYTHONPATH=${TOOL_CACHE}/llvm-project/llvm/build-shared/tools/mlir/python_packages/mlir_core" >> "${GITHUB_ENV}"
+          echo "LLVM_DIR=${TOOL_CACHE}/llvm-project/llvm/build-assert" >> "${GITHUB_ENV}"
+          echo "MLIR_PYTHONPATH=${TOOL_CACHE}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core" >> "${GITHUB_ENV}"
 
       - name: Ensure runner dependencies
         shell: bash
@@ -143,15 +143,16 @@ jobs:
         run: |
           set -euo pipefail
           cd "${LLVM_ROOT}"
-          cmake -G Ninja -S llvm -B llvm/build-shared \
+          cmake -G Ninja -S llvm -B llvm/build-assert \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" \
             -DBUILD_SHARED_LIBS=ON \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DPython3_EXECUTABLE=python3 \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_TARGETS_TO_BUILD="host"
 
-          ninja -C llvm/build-shared
+          ninja -C llvm/build-assert
 
       - name: Build PTOAS
         shell: bash

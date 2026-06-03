@@ -209,6 +209,11 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertTrue(hasattr(pto, "ui32"))
         self.assertTrue(hasattr(pto, "si64"))
         self.assertTrue(hasattr(pto, "ui64"))
+        self.assertTrue(hasattr(pto, "hif8"))
+        self.assertTrue(hasattr(pto, "f8e4m3"))
+        self.assertTrue(hasattr(pto, "f8e5m2"))
+        self.assertTrue(hasattr(pto, "f4e1m2x2"))
+        self.assertTrue(hasattr(pto, "f4e2m1x2"))
         self.assertEqual(pto.BarrierType.VST_VLD.value, "VST_VLD")
         self.assertEqual(pto.BarrierType.VST_VST.value, "VST_VST")
         self.assertEqual(pto.BarrierType.VS_ALL.value, "VS_ALL")
@@ -283,9 +288,16 @@ class TileLangDSLPackageTests(unittest.TestCase):
         self.assertIsNot(pto.ui32, pto.i32)
         self.assertEqual(pto.bytewidth(pto.si16), 2)
         self.assertEqual(pto.bytewidth(pto.ui64), 8)
+        self.assertEqual(pto.bytewidth(pto.hif8), 1)
+        self.assertEqual(pto.bytewidth(pto.f8e4m3), 1)
+        self.assertEqual(pto.bytewidth(pto.f4e2m1x2), 1)
         self.assertEqual(pto.get_lanes(pto.ui32), 64)
         self.assertEqual(pto.get_lanes(pto.i64), 32)
         self.assertEqual(pto.elements_per_vreg(pto.si8), 256)
+        self.assertEqual(pto.elements_per_vreg(pto.f8e4m3), 256)
+        self.assertEqual(pto.elements_per_vreg(pto.f8e5m2), 256)
+        with self.assertRaises(TypeError):
+            pto.elements_per_vreg(pto.hif8)
         self.assertEqual(repr(pto.align), "align")
 
     def test_tile_config_exposes_normalized_query_properties(self) -> None:
@@ -1021,6 +1033,75 @@ def template_fallback(src: pto.Tile, indexCol: pto.i32, dst: pto.Tile):
         self.assertEqual(aligned_operand_specs[1]["value"], 8)
         context_attrs = expand_helper._build_positional_context_attrs(aligned_operand_specs)
         self.assertEqual(context_attrs["arg1_value"], 8)
+
+    def test_repo_tload_template_expands_low_precision_dtypes_end_to_end(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        template_path = repo_root / "lib" / "TileOps" / "tload_template.py"
+        with expand_helper._template_import_context(template_path.parent):
+            mod = expand_helper._import_py_file(template_path)
+        self.assertIsNotNone(mod)
+        descriptors = expand_helper._find_descriptors(mod)
+        self.assertTrue(descriptors)
+
+        for dtype_name, rendered_dtype in (
+            ("f8e4m3", "f8E4M3FN"),
+            ("hif8", "!pto.hif8"),
+        ):
+            with self.subTest(dtype=dtype_name):
+                operand_specs = expand_helper._parse_operand_specs(
+                    f"""
+[
+  {{
+    "kind": "view",
+    "dtype": "{dtype_name}",
+    "shape": [1, 1, 1, 16, 64],
+    "strides": [1024, 1024, 1024, 64, 1],
+    "memory_space": "gm"
+  }},
+  {{
+    "kind": "tile",
+    "dtype": "{dtype_name}",
+    "shape": [16, 64],
+    "valid_shape": [16, 64],
+    "memory_space": "ub",
+    "config": {{
+      "b_layout": "row_major",
+      "s_layout": "none_box",
+      "s_fractal_size": 512,
+      "pad_value": "0x0"
+    }}
+  }}
+]
+"""
+                )
+                selected = expand_helper._select_descriptor(
+                    descriptors,
+                    target="a5",
+                    op_name="pto.tload",
+                    operand_specs=operand_specs,
+                )
+                self.assertEqual(selected.name, "template_tload_nd2nd")
+
+                tile_specs = {}
+                for param, operand_spec in zip(selected.parameters, operand_specs):
+                    if param.kind != "tile":
+                        continue
+                    tile_specs[param.name] = pto.TileSpecialization(
+                        shape=operand_spec["shape"],
+                        memory_space=operand_spec["memory_space"],
+                        config=operand_spec["config"],
+                        valid_shape=operand_spec["valid_shape"],
+                    )
+                text = selected.specialize(**tile_specs).mlir_text()
+
+                self.assertIn(f"!pto.partition_tensor_view<?x?x?x?x?x{rendered_dtype}>", text)
+                self.assertIn(f"!pto.tile_buf<loc=vec, dtype={rendered_dtype}, rows=16, cols=64", text)
+                self.assertRegex(
+                    text,
+                    rf"pto\.copy_gm_to_ubuf %src_i_\d+, %dst_i_\d+, .*"
+                    rf": !pto\.ptr<{rendered_dtype}, gm>, !pto\.ptr<{rendered_dtype}, ub>,",
+                )
+                self.assertIn("arith.constant 64 : index", text)
 
 
 class TileLangDSLSupportMatrixTests(unittest.TestCase):
@@ -5266,6 +5347,76 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("= arith.constant 64 : index", text)
         self.assertRegex(text, r"scf\.for %col_\d+ = %c0 to %cols_\d+ step %lanes_\d+")
         self.assertIn("pto.tile_valid_cols %arg0", text)
+
+    def test_low_precision_storage_types_lower_through_tile_and_views(self) -> None:
+        @pto.vkernel(
+            op="low_precision_storage_unique",
+            dtypes=[(pto.f8e4m3, pto.hif8)],
+            advanced=True,
+        )
+        def kernel(src: pto.TensorView, dst: pto.PartitionTensorView):
+            fp8_tile = pto.Tile((8, 32), pto.f8e4m3, pto.MemorySpace.UB)
+            hif8_tile = pto.Tile((8, 32), pto.hif8, pto.MemorySpace.UB)
+            fp4_tile = pto.Tile((8, 32), pto.f4e2m1x2, pto.MemorySpace.UB)
+            _ = src
+            _ = dst
+            _ = fp8_tile
+            _ = hif8_tile
+            _ = fp4_tile
+            return None
+
+        text = kernel.mlir_text()
+        self.assertIn("!pto.tensor_view<?x?x?x?x?xf8E4M3FN>", text)
+        self.assertIn("!pto.partition_tensor_view<?x?x?x?x?x!pto.hif8>", text)
+        self.assertIn("dtype=f8E4M3FN", text)
+        self.assertIn("dtype=!pto.hif8", text)
+        self.assertIn("dtype=!pto.f4E2M1x2", text)
+
+    def test_low_precision_fp8_types_lower_through_ptr_vreg_and_vector_surfaces(self) -> None:
+        self.assertEqual(pto.ptr(pto.f8e4m3, pto.MemorySpace.UB).element_dtype, pto.f8e4m3)
+        self.assertEqual(pto.vreg(pto.f8e5m2).lanes, 256)
+        self.assertEqual(pto.vector(pto.f8e4m3, (2,)).element_dtype, pto.f8e4m3)
+
+        @pto.vkernel(op="low_precision_fp8_vreg_unique", dtypes=[(pto.f8e4m3, pto.f8e4m3)], advanced=True)
+        def kernel(src: pto.ptr(pto.f8e4m3, pto.MemorySpace.UB), dst: pto.ptr(pto.f8e4m3, pto.MemorySpace.UB)):
+            mask = pto.make_mask(pto.f8e4m3, pto.PAT.ALL)
+            vec: pto.vreg(pto.f8e4m3) = pto.vlds(src, 0)
+            pto.vsts(vec, dst, 0, mask)
+            return None
+
+        text = kernel.mlir_text()
+        self.assertIn("!pto.ptr<f8E4M3FN, ub>", text)
+        self.assertIn("!pto.vreg<256xf8E4M3FN>", text)
+        self.assertIn("!pto.mask<b8>", text)
+        self.assertIn("pto.vlds", text)
+        self.assertIn("pto.vsts", text)
+
+    def test_low_precision_custom_types_reject_scalar_vreg_and_vector_surfaces(self) -> None:
+        @pto.vkernel(op="low_precision_scalar_reject_unique", dtypes=[(pto.hif8,)])
+        def scalar_kernel(value: pto.hif8):
+            return None
+
+        with self.assertRaises(TypeError) as scalar_ctx:
+            analyze_frontend_kernel(build_frontend_kernel_node(scalar_kernel))
+        self.assertIn("low-precision dtype `hif8`", str(scalar_ctx.exception))
+
+        self.assertEqual(pto.ptr(pto.hif8, pto.MemorySpace.UB).element_dtype, pto.hif8)
+
+        @pto.vkernel(op="low_precision_vreg_reject_unique", dtypes=[(pto.hif8,)])
+        def vreg_kernel(tile: pto.Tile):
+            vec_ty = pto.vreg(pto.hif8)
+            return None
+
+        specialized = vreg_kernel.specialize(
+            tile=pto.TileSpecialization(shape=(8, 16), memory_space=pto.MemorySpace.UB),
+        )
+        with self.assertRaises(TypeError) as vreg_ctx:
+            analyze_frontend_kernel(build_frontend_kernel_node(specialized))
+        self.assertIn("storage-only low-precision dtype `hif8`", str(vreg_ctx.exception))
+
+        with self.assertRaises(TypeError) as vector_ctx:
+            pto.vector(pto.f4e1m2x2, (2,))
+        self.assertIn("storage-only low-precision dtype `f4e1m2x2`", str(vector_ctx.exception))
 
     def test_vreg_type_constructor_and_annotation_match_vector_value(self) -> None:
         @pto.vkernel(op="vreg_type_annotation_unique", dtypes=[(pto.f32,)], advanced=True)

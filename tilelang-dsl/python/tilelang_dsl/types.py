@@ -59,11 +59,24 @@ _FLOAT_DTYPE_WIDTHS = {
     "bf16": 16,
     "f32": 32,
 }
+_LOW_PRECISION_DTYPE_WIDTHS = {
+    "hif8": 8,
+    "f8e4m3": 8,
+    "f8e5m2": 8,
+    "f4e1m2x2": 8,
+    "f4e2m1x2": 8,
+}
+_STORAGE_ONLY_DTYPE_WIDTHS = {
+    "hif8": 8,
+    "f4e1m2x2": 8,
+    "f4e2m1x2": 8,
+}
 
 _DTYPE_BYTE_WIDTHS = {
     name: bits // 8 for name, bits in _INTEGER_DTYPE_WIDTHS.items()
 }
 _DTYPE_BYTE_WIDTHS.update({name: bits // 8 for name, bits in _FLOAT_DTYPE_WIDTHS.items()})
+_DTYPE_BYTE_WIDTHS.update({name: bits // 8 for name, bits in _LOW_PRECISION_DTYPE_WIDTHS.items()})
 
 
 class TensorView:
@@ -753,6 +766,11 @@ ui64 = ScalarType("ui64")
 f16 = ScalarType("f16")
 bf16 = ScalarType("bf16")
 f32 = ScalarType("f32")
+hif8 = ScalarType("hif8")
+f8e4m3 = ScalarType("f8e4m3")
+f8e5m2 = ScalarType("f8e5m2")
+f4e1m2x2 = ScalarType("f4e1m2x2")
+f4e2m1x2 = ScalarType("f4e2m1x2")
 PIPE = Pipe
 EVENT = Event
 PAT = MaskPattern
@@ -789,6 +807,11 @@ def vreg(dtype: ScalarType) -> VRegType:
 def vector(dtype: ScalarType, shape: tuple[int, ...] | list[int] | int) -> VectorType:
     if not isinstance(dtype, ScalarType):
         raise TypeError("vector() expects a TileLang scalar dtype")
+    if is_storage_only_dtype(dtype):
+        raise TypeError(
+            f"vector() does not accept storage-only low-precision dtype `{dtype.name}`; "
+            "these dtypes are only supported by storage and ptr surfaces in TileLang DSL v1"
+        )
     if isinstance(shape, int) and not isinstance(shape, bool):
         normalized_shape = (shape,)
     elif isinstance(shape, (list, tuple)):
@@ -825,6 +848,14 @@ def is_float_dtype(dtype: ScalarType) -> bool:
     return isinstance(dtype, ScalarType) and dtype.name in _FLOAT_DTYPE_WIDTHS
 
 
+def is_storage_only_dtype(dtype: ScalarType) -> bool:
+    return isinstance(dtype, ScalarType) and dtype.name in _STORAGE_ONLY_DTYPE_WIDTHS
+
+
+def is_low_precision_dtype(dtype: ScalarType) -> bool:
+    return isinstance(dtype, ScalarType) and dtype.name in _LOW_PRECISION_DTYPE_WIDTHS
+
+
 def bytewidth(dtype: ScalarType) -> int:
     if not isinstance(dtype, ScalarType):
         raise TypeError("bytewidth expects a TileLang scalar dtype")
@@ -835,6 +866,10 @@ def bytewidth(dtype: ScalarType) -> int:
 
 
 def get_lanes(dtype: ScalarType) -> int:
+    if is_storage_only_dtype(dtype):
+        raise TypeError(
+            f"dtype `{dtype.name}` is storage-only in TileLang DSL v1 and cannot be used as a vreg element dtype"
+        )
     return 256 // bytewidth(dtype)
 
 
@@ -908,6 +943,11 @@ __all__ = [
     "f16",
     "bf16",
     "f32",
+    "hif8",
+    "f8e4m3",
+    "f8e5m2",
+    "f4e1m2x2",
+    "f4e2m1x2",
     "AnyFloat",
     "AnyInt",
     "AnyType",
@@ -920,4 +960,6 @@ __all__ = [
     "bytewidth",
     "get_lanes",
     "elements_per_vreg",
+    "is_storage_only_dtype",
+    "is_low_precision_dtype",
 ]

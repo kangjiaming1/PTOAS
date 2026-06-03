@@ -26,6 +26,8 @@ def generate(output_dir: Path) -> None:
     v6 = np.full(ELEMS, -1, dtype=np.int64)
     v7 = np.full(ELEMS, -1.0, dtype=np.float32)
     v8 = np.full(ELEMS, -1.0, dtype=np.float64)
+    v9 = np.full(ELEMS, 0xFF, dtype=np.uint8)
+    v10 = np.full(ELEMS, 0xFF, dtype=np.uint8)
     golden_v2 = v2.copy()
     golden_v3 = v3.copy()
     golden_v4 = v4.copy()
@@ -33,6 +35,8 @@ def generate(output_dir: Path) -> None:
     golden_v6 = v6.copy()
     golden_v7 = v7.copy()
     golden_v8 = v8.copy()
+    golden_v9 = v9.copy()
+    golden_v10 = v10.copy()
     inputs = np.array([0x10203040, -1234567], dtype=np.int32)
     v1[:2] = inputs
     golden_v1[:2] = inputs
@@ -50,6 +54,8 @@ def generate(output_dir: Path) -> None:
     v6[:2] = np.array([0x1020304050607080, -0x102030405060708], dtype=np.int64)
     v7[:2] = np.array([2.5, -3.5], dtype=np.float32)
     v8[:2] = np.array([4.5, -5.5], dtype=np.float64)
+    v9[:2] = np.array([0x38, 0xB8], dtype=np.uint8)
+    v10[:2] = np.array([0x10, 0x08], dtype=np.uint8)
     golden_v4[:2] = v4[:2]
     golden_v4[2:4] = v4[:2]
     golden_v5[:2] = v5[:2]
@@ -60,6 +66,10 @@ def generate(output_dir: Path) -> None:
     golden_v7[2:4] = v7[:2]
     golden_v8[:2] = v8[:2]
     golden_v8[2:4] = v8[:2]
+    golden_v9[:2] = v9[:2]
+    golden_v9[2:4] = v9[:2]
+    golden_v10[:2] = v10[:2]
+    golden_v10[2:4] = v10[:2]
     v1.tofile(output_dir / "v1.bin")
     v2.tofile(output_dir / "v2.bin")
     v3.tofile(output_dir / "v3.bin")
@@ -68,6 +78,8 @@ def generate(output_dir: Path) -> None:
     v6.tofile(output_dir / "v6.bin")
     v7.tofile(output_dir / "v7.bin")
     v8.tofile(output_dir / "v8.bin")
+    v9.tofile(output_dir / "v9.bin")
+    v10.tofile(output_dir / "v10.bin")
     golden_v1.tofile(output_dir / "golden_v1.bin")
     golden_v2.tofile(output_dir / "golden_v2.bin")
     golden_v3.tofile(output_dir / "golden_v3.bin")
@@ -76,6 +88,8 @@ def generate(output_dir: Path) -> None:
     golden_v6.tofile(output_dir / "golden_v6.bin")
     golden_v7.tofile(output_dir / "golden_v7.bin")
     golden_v8.tofile(output_dir / "golden_v8.bin")
+    golden_v9.tofile(output_dir / "golden_v9.bin")
+    golden_v10.tofile(output_dir / "golden_v10.bin")
 
 
 def main():

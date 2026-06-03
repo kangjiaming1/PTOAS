@@ -6,13 +6,15 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
                                           %arg4: !pto.ptr<i16, gm>,
                                           %arg5: !pto.ptr<i64, gm>,
                                           %arg6: !pto.ptr<f32, gm>,
-                                          %arg7: !pto.ptr<f64, gm>) attributes {pto.aicore} {
+                                          %arg7: !pto.ptr<f64, gm>,
+                                          %arg8: !pto.ptr<f8E4M3FN, gm>,
+                                          %arg9: !pto.ptr<!pto.hif8, gm>) attributes {pto.aicore} {
     %dim_z = arith.constant 1 : i32
     %dim_y = arith.constant 1 : i32
     %dim_x = arith.constant 32 : i32
 
-    pto.simt_launch @simt_ldst_policy_core_body<<<%dim_x, %dim_y, %dim_z>>>(%arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7)
-      : (!pto.ptr<i32, gm>, !pto.ptr<f16, gm>, !pto.ptr<bf16, gm>, !pto.ptr<i8, gm>, !pto.ptr<i16, gm>, !pto.ptr<i64, gm>, !pto.ptr<f32, gm>, !pto.ptr<f64, gm>) -> ()
+    pto.simt_launch @simt_ldst_policy_core_body<<<%dim_x, %dim_y, %dim_z>>>(%arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9)
+      : (!pto.ptr<i32, gm>, !pto.ptr<f16, gm>, !pto.ptr<bf16, gm>, !pto.ptr<i8, gm>, !pto.ptr<i16, gm>, !pto.ptr<i64, gm>, !pto.ptr<f32, gm>, !pto.ptr<f64, gm>, !pto.ptr<f8E4M3FN, gm>, !pto.ptr<!pto.hif8, gm>) -> ()
     pto.barrier #pto.pipe<PIPE_ALL>
     return
   }
@@ -24,7 +26,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
                                         %arg4: !pto.ptr<i16, gm>,
                                         %arg5: !pto.ptr<i64, gm>,
                                         %arg6: !pto.ptr<f32, gm>,
-                                        %arg7: !pto.ptr<f64, gm>) attributes {pto.simt_entry} {
+                                        %arg7: !pto.ptr<f64, gm>,
+                                        %arg8: !pto.ptr<f8E4M3FN, gm>,
+                                        %arg9: !pto.ptr<!pto.hif8, gm>) attributes {pto.simt_entry} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -58,6 +62,10 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     %f32_uncache = pto.ldg %arg6[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f32, gm> -> f32
     %f64_cache = pto.ldg %arg7[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<f64, gm> -> f64
     %f64_uncache = pto.ldg %arg7[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f64, gm> -> f64
+    %f8e4_cache = pto.ldg %arg8[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<f8E4M3FN, gm> -> f8E4M3FN
+    %f8e4_uncache = pto.ldg %arg8[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f8E4M3FN, gm> -> f8E4M3FN
+    %hif8_cache = pto.ldg %arg9[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<!pto.hif8, gm> -> !pto.hif8
+    %hif8_uncache = pto.ldg %arg9[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<!pto.hif8, gm> -> !pto.hif8
     pto.stg %i8_cache, %arg3[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<i8, gm>, i8
     pto.stg %i8_uncache, %arg3[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i8, gm>, i8
     pto.stg %i16_cache, %arg4[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<i16, gm>, i16
@@ -68,6 +76,10 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.stg %f32_uncache, %arg6[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f32, gm>, f32
     pto.stg %f64_cache, %arg7[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<f64, gm>, f64
     pto.stg %f64_uncache, %arg7[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f64, gm>, f64
+    pto.stg %f8e4_cache, %arg8[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<f8E4M3FN, gm>, f8E4M3FN
+    pto.stg %f8e4_uncache, %arg8[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f8E4M3FN, gm>, f8E4M3FN
+    pto.stg %hif8_cache, %arg9[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<!pto.hif8, gm>, !pto.hif8
+    pto.stg %hif8_uncache, %arg9[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<!pto.hif8, gm>, !pto.hif8
     return
   }
 }

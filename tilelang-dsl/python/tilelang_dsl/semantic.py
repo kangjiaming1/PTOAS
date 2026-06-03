@@ -83,6 +83,11 @@ from .types import (
     bytewidth,
     f16,
     f32,
+    hif8,
+    f8e4m3,
+    f8e5m2,
+    f4e1m2x2,
+    f4e2m1x2,
     i1,
     i8,
     i16,
@@ -92,6 +97,8 @@ from .types import (
     integer_signedness,
     is_float_dtype,
     is_integer_dtype,
+    is_low_precision_dtype,
+    is_storage_only_dtype,
     si8,
     si16,
     si32,
@@ -122,6 +129,11 @@ _DTYPE_SYMBOLS = {
     "f16": f16,
     "bf16": bf16,
     "f32": f32,
+    "hif8": hif8,
+    "f8e4m3": f8e4m3,
+    "f8e5m2": f8e5m2,
+    "f4e1m2x2": f4e1m2x2,
+    "f4e2m1x2": f4e2m1x2,
 }
 _MASK_TYPE_SYMBOLS = {
     "mask_b8": MaskType("b8"),
@@ -204,6 +216,13 @@ _VCVT_ATTR_CONTRACTS: dict[tuple[str, str], tuple[bool, bool, bool]] = {
     ("s32", "s64"): (False, False, True),
     ("s64", "f32"): (True, False, True),
     ("s64", "s32"): (False, True, True),
+    ("f32", "fp8"): (True, True, True),
+    ("f32", "hif8"): (True, True, True),
+    ("f16", "hif8"): (True, True, True),
+    ("bf16", "fp4x2"): (True, False, True),
+    ("fp8", "f32"): (False, False, True),
+    ("hif8", "f32"): (False, False, True),
+    ("fp4x2", "bf16"): (False, False, True),
 }
 
 
@@ -214,6 +233,12 @@ def _classify_vcvt_elem_kind(dtype: ScalarType) -> str | None:
         return "bf16"
     if dtype == f32:
         return "f32"
+    if dtype in {f8e4m3, f8e5m2}:
+        return "fp8"
+    if dtype == hif8:
+        return "hif8"
+    if dtype in {f4e1m2x2, f4e2m1x2}:
+        return "fp4x2"
     if not is_integer_dtype(dtype):
         return None
     width = integer_bitwidth(dtype)
@@ -971,6 +996,7 @@ class _SemanticAnalyzer:
         if param.kind == "mask":
             return SemanticMaskType(granularity=param.dtype.granularity)
         if param.kind == "scalar":
+            self._require_non_low_precision_dtype(param.dtype, "scalar parameter type")
             return SemanticScalarType(dtype=param.dtype)
         raise ValueError(f"unsupported parameter kind {param.kind!r}")
 
@@ -5161,6 +5187,7 @@ class _SemanticAnalyzer:
         *,
         surface_name: str,
     ) -> SemanticExpr:
+        self._require_non_low_precision_dtype(target_dtype, f"{surface_name} scalar constructor")
         if len(args) != 1:
             raise TypeError(f"{surface_name} expects exactly 1 positional argument in TileLang DSL v1")
 
@@ -5349,6 +5376,7 @@ class _SemanticAnalyzer:
         if len(args) != 1:
             raise TypeError("pto.vreg expects exactly 1 positional argument in TileLang DSL v1")
         dtype = self._require_dtype_symbol(args[0], "pto.vreg element type")
+        self._require_non_storage_only_dtype(dtype, "pto.vreg element type")
         vreg_type = self._vreg_type_for_dtype(dtype)
         return SemanticLiteralExpr(
             value=VRegType(element_dtype=dtype, lanes=vreg_type.lanes),
@@ -5359,6 +5387,7 @@ class _SemanticAnalyzer:
         if len(args) != 2:
             raise TypeError("pto.vector expects exactly 2 positional arguments in TileLang DSL v1")
         dtype = self._require_dtype_symbol(args[0], "pto.vector element type")
+        self._require_non_storage_only_dtype(dtype, "pto.vector element type")
         shape = self._require_vector_shape_expr(args[1], "pto.vector shape")
         return SemanticLiteralExpr(
             value=VectorType(element_dtype=dtype, shape=shape),
@@ -6249,8 +6278,13 @@ class _SemanticAnalyzer:
             raise TypeError(f"pto.{name} expects exactly 2 positional arguments in TileLang DSL")
         src0 = self._require_vreg_expr(args[0], f"pto.{name} src0")
         src1 = self._require_vreg_expr(args[1], f"pto.{name} src1")
-        if src0 != src1:
-            raise TypeError(f"pto.{name} requires src0/src1 vector types to match")
+        if src1.lanes != src0.lanes:
+            raise TypeError(f"pto.{name} requires src0/src1 to have identical lane counts")
+        src1_bits = integer_bitwidth(src1.element_dtype)
+        if src1_bits is None:
+            raise TypeError(f"pto.{name} requires src1 to use integer vector elements")
+        if src1_bits != bytewidth(src0.element_dtype) * 8:
+            raise TypeError(f"pto.{name} requires src1 integer element width to match src0 element width")
         return SemanticCallExpr(namespace="pto", name=name, args=args, type=src0)
 
     def _analyze_carry_op(
@@ -6565,6 +6599,20 @@ class _SemanticAnalyzer:
                 return expr.binding.value
             raise TypeError(f"{context} must be a TileLang scalar dtype symbol in TileLang DSL v1")
         return expr.value
+
+    def _require_non_storage_only_dtype(self, dtype: ScalarType, context: str) -> None:
+        if is_storage_only_dtype(dtype):
+            raise TypeError(
+                f"{context} does not accept storage-only low-precision dtype `{dtype.name}`; "
+                "these dtypes are only supported by storage and ptr surfaces in TileLang DSL v1"
+            )
+
+    def _require_non_low_precision_dtype(self, dtype: ScalarType, context: str) -> None:
+        if is_low_precision_dtype(dtype):
+            raise TypeError(
+                f"{context} does not accept low-precision dtype `{dtype.name}`; "
+                "these dtypes are not scalar element dtypes in TileLang DSL v1"
+            )
 
     def _dtype_symbol_expr(self, dtype: ScalarType) -> SemanticSymbolExpr:
         return SemanticSymbolExpr(
@@ -7340,6 +7388,8 @@ class _SemanticAnalyzer:
             return "b32"
         if dtype.name in {"f16", "bf16"} or int_bits == 16:
             return "b16"
+        if dtype.name in {"f8e4m3", "f8e5m2", "hif8", "f4e1m2x2", "f4e2m1x2"}:
+            return "b8"
         if int_bits == 8:
             return "b8"
         raise TypeError(f"dtype `{dtype.name}` is not supported by make_mask/vector lowering in TileLang DSL v1")
