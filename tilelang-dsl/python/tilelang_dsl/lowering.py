@@ -2082,7 +2082,7 @@ class _AuthoringRenderer:
         if expr.name == "mte_l1_bt":
             self._render_mte_l1_bt(expr, env, indent=indent, into=into)
             return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
-        
+
         if expr.name == "mte_l1_fb":
             self._render_mte_l1_fb(expr, env, indent=indent, into=into)
             return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
