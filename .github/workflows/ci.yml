@@ -96,6 +96,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-22.04
     env:
+      PTOAS_CLANG_MAJOR: "15"
       LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
       LLVM_REF: feature-vpto
       LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
@@ -103,7 +104,7 @@ jobs:
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
       PTO_INSTALL_DIR: ${{ github.workspace }}/install-assert
       MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core
-      LLVM_CACHE_FLAVOR: assert-shared-mlirpy-hardening-v1
+      LLVM_CACHE_FLAVOR: assert-shared-mlirpy-hardening-v2
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -117,7 +118,7 @@ jobs:
           sudo apt-get install -y \
             cmake git ninja-build \
             python3 python3-pip python3-venv \
-            clang lld \
+            clang-${PTOAS_CLANG_MAJOR} lld-${PTOAS_CLANG_MAJOR} \
             libedit-dev zlib1g-dev libxml2-dev libzstd-dev
           python3 -m pip install --upgrade pip
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x.
@@ -142,6 +143,18 @@ jobs:
           mkdir -p "${PAYLOAD_DIR}/test/npu_validation/scripts"
           mkdir -p "${PAYLOAD_DIR}/test/npu_validation/templates"
 
+      - name: Resolve clang-${{ env.PTOAS_CLANG_MAJOR }} toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clang_c="$(command -v "clang-${PTOAS_CLANG_MAJOR}")"
+          clang_cxx="$(command -v "clang++-${PTOAS_CLANG_MAJOR}")"
+          echo "PTOAS_CMAKE_C_COMPILER=${clang_c}" >> "${GITHUB_ENV}"
+          echo "PTOAS_CMAKE_CXX_COMPILER=${clang_cxx}" >> "${GITHUB_ENV}"
+          "${clang_c}" --version | head -n 1
+          "${clang_cxx}" --version | head -n 1
+
       - name: Resolve LLVM source SHA
         shell: bash
         run: |
@@ -160,7 +173,7 @@ jobs:
         with:
           path: |
             llvm-project/llvm/build-assert
-          key: llvm-${{ runner.os }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
+          key: llvm-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Prepare LLVM source (no rebuild)
         run: |
@@ -188,6 +201,8 @@ jobs:
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DPython3_EXECUTABLE=python3 \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
+            -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
             -DLLVM_TARGETS_TO_BUILD="host"
 
           ninja -C "${LLVM_BUILD_DIR}"
@@ -200,13 +215,16 @@ jobs:
         with:
           path: |
             llvm-project/llvm/build-assert
-          key: llvm-${{ runner.os }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
+          key: llvm-${{ runner.os }}-clang${{ env.PTOAS_CLANG_MAJOR }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
 
       - name: Build PTOAS
         run: |
+          rm -rf "${PTO_BUILD_DIR}"
           rm -rf "${PTO_INSTALL_DIR}"
           # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
           LLVM_BUILD_DIR="${LLVM_DIR}" \
+          CMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
+          CMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
             PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
             python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
 
