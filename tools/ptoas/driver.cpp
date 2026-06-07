@@ -773,9 +773,8 @@ int main(int argc, char **argv) {
   if (failed(buildBackendInfo(module.get(), cliBackendSpecified, backendInfo)))
     return 1;
   context.setBackendInfo(std::move(backendInfo));
-  if (failed(context.initializeEnvironment(
-          context.getBackendInfo().requiresToolchain, llvm::errs())))
-    return 1;
+  (void)context.initializeEnvironment(context.getBackendInfo().requiresToolchain,
+                                      llvm::errs());
 
   mlir::pto::PTOASCompileResult result;
   if (failed(runPTOASJobs(module, context, result)))
