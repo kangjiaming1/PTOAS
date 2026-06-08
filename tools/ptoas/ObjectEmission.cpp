@@ -760,12 +760,12 @@ mlir::pto::CANNToolchain::validate(llvm::raw_ostream &diagOS) const {
 
 llvm::StringRef mlir::pto::CANNToolchain::vptoPublicABISuffix(
     ObjectEmissionDeviceTarget target) const {
-  const bool usesBeta1ABI = cannVersion == CANNVersion{9, 0, 0, 1};
+  const bool usesNewABI = cannVersion >= CANNVersion{9, 0, 0, 2};
   switch (target) {
   case ObjectEmissionDeviceTarget::Vector:
-    return usesBeta1ABI ? llvm::StringRef("_mix_aiv") : llvm::StringRef(".vector");
+    return usesNewABI ? llvm::StringRef(".vector") : llvm::StringRef("_mix_aiv");
   case ObjectEmissionDeviceTarget::Cube:
-    return usesBeta1ABI ? llvm::StringRef("_mix_aic") : llvm::StringRef(".cube");
+    return usesNewABI ? llvm::StringRef(".cube") : llvm::StringRef("_mix_aic");
   }
   llvm_unreachable("unknown object emission device target");
 }

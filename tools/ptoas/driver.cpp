@@ -324,9 +324,10 @@ mlir::pto::PTOASContext::initializeToolchain(llvm::raw_ostream &diagOS) {
   std::optional<CANNVersion> parsedVersion =
       parseCANNVersion(discovered->cannVersionString);
   if (!parsedVersion) {
-    diagOS << "Error: unable to parse CANN version: "
-           << discovered->cannVersionString << "\n";
-    return failure();
+    diagOS << "Warning: unable to parse CANN version: "
+           << discovered->cannVersionString
+           << "; using 9.0.0-beta.1 compatibility behavior.\n";
+    parsedVersion = CANNVersion{9, 0, 0, 1};
   }
   discovered->cannVersion = *parsedVersion;
   cannVersion = discovered->cannVersion;
