@@ -11,11 +11,13 @@
 // CHECK: error: 'pto.vcvt' op part must be P0, P1, P2, or P3 for packed vcvt forms
 
 module attributes {pto.target_arch = "a5"} {
-  func.func @vcvt_u32_to_u8_rejects_even(%seed: ui32) {
+  func.func @vcvt_f4_to_bf16_rejects_even(%seed: bf16) {
     pto.vecscope {
-      %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
-      %src = pto.vbr %seed : ui32 -> !pto.vreg<64xui32>
-      %bad = pto.vcvt %src, %mask {sat = "SAT", part = "EVEN"} : !pto.vreg<64xui32>, !pto.mask<b32> -> !pto.vreg<256xui8>
+      %mask_b8 = pto.pset_b8 "PAT_ALL" : !pto.mask<b8>
+      %mask_b16 = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
+      %src = pto.vdup %seed, %mask_b16 : bf16, !pto.mask<b16> -> !pto.vreg<128xbf16>
+      %f4 = pto.vcvt %src, %mask_b16 {rnd = "R", part = "P0"} : !pto.vreg<128xbf16>, !pto.mask<b16> -> !pto.vreg<256x!pto.f4E1M2x2>
+      %bad = pto.vcvt %f4, %mask_b8 {part = "EVEN"} : !pto.vreg<256x!pto.f4E1M2x2>, !pto.mask<b8> -> !pto.vreg<128xbf16>
     }
     return
   }

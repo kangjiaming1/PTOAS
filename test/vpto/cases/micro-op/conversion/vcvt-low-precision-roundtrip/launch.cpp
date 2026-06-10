@@ -5,6 +5,7 @@
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
+
 #ifndef __VEC_SCOPE__
 #define __VEC_SCOPE__
 #endif
@@ -17,7 +18,8 @@ typedef struct { unsigned char v; } float8_e8m0_t;
 typedef struct { unsigned char v; } float4_e1m2x2_t;
 typedef struct { unsigned char v; } float4_e2m1x2_t;
 #endif
-#include <stdint.h>
+
+#include <cstdint>
 
 #if !defined(__CCE_AICORE__) && !defined(TMRGSORT_HPP)
 struct MrgSortExecutedNumList {
@@ -27,22 +29,27 @@ struct MrgSortExecutedNumList {
   uint16_t mrgSortList3;
 };
 #endif
+
 #ifndef __CPU_SIM
 #include "acl/acl.h"
 #endif
-extern "C" __global__ [aicore] void simt_ldst_policy_core_kernel(
-    __gm__ int *v1, __gm__ half *v2, __gm__ bfloat16_t *v3,
-    __gm__ int8_t *v4, __gm__ int16_t *v5, __gm__ int64_t *v6,
-    __gm__ float *v7, __gm__ double *v8, __gm__ uint8_t *v9,
-    __gm__ uint8_t *v10);
-void LaunchSimt_ldst_policy_core_kernel(int *v1, uint16_t *v2, uint16_t *v3,
-                                        int8_t *v4, int16_t *v5, int64_t *v6,
-                                        float *v7, double *v8, uint8_t *v9,
-                                        uint8_t *v10,
-                                        void *stream) {
-  simt_ldst_policy_core_kernel<<<1, nullptr, stream>>>(
-      (__gm__ int *)v1, (__gm__ half *)v2, (__gm__ bfloat16_t *)v3,
-      (__gm__ int8_t *)v4, (__gm__ int16_t *)v5, (__gm__ int64_t *)v6,
-      (__gm__ float *)v7, (__gm__ double *)v8, (__gm__ uint8_t *)v9,
-      (__gm__ uint8_t *)v10);
+
+extern "C" __global__ [aicore] void vcvt_low_precision_roundtrip_kernel(
+    __gm__ uint8_t *f8e4_in, __gm__ uint8_t *f8e5_in,
+    __gm__ uint8_t *hif8_in, __gm__ uint8_t *f4e1_in,
+    __gm__ uint8_t *f4e2_in, __gm__ uint8_t *f8e4_out,
+    __gm__ uint8_t *f8e5_out, __gm__ uint8_t *hif8_out,
+    __gm__ uint8_t *f4e1_out, __gm__ uint8_t *f4e2_out);
+
+void LaunchVcvt_low_precision_roundtrip_kernel(
+    uint8_t *f8e4_in, uint8_t *f8e5_in, uint8_t *hif8_in,
+    uint8_t *f4e1_in, uint8_t *f4e2_in, uint8_t *f8e4_out,
+    uint8_t *f8e5_out, uint8_t *hif8_out, uint8_t *f4e1_out,
+    uint8_t *f4e2_out, void *stream) {
+  vcvt_low_precision_roundtrip_kernel<<<1, nullptr, stream>>>(
+      (__gm__ uint8_t *)f8e4_in, (__gm__ uint8_t *)f8e5_in,
+      (__gm__ uint8_t *)hif8_in, (__gm__ uint8_t *)f4e1_in,
+      (__gm__ uint8_t *)f4e2_in, (__gm__ uint8_t *)f8e4_out,
+      (__gm__ uint8_t *)f8e5_out, (__gm__ uint8_t *)hif8_out,
+      (__gm__ uint8_t *)f4e1_out, (__gm__ uint8_t *)f4e2_out);
 }

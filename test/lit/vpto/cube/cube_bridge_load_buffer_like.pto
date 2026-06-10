@@ -19,6 +19,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
       %dst_right: memref<?xf16, #pto.address_space<right>>,
       %dst_left_mx: memref<?xf16, #pto.address_space<left>>,
       %dst_right_mx: memref<?xf16, #pto.address_space<right>>,
+      %src_hif8: memref<?x!pto.hif8, #pto.address_space<mat>>,
+      %dst_left_hif8: memref<?x!pto.hif8, #pto.address_space<left>>,
+      %dst_right_hif8: memref<?x!pto.hif8, #pto.address_space<right>>,
       %dst_bias: memref<?xf32, #pto.address_space<bias>>) attributes {pto.kernel} {
     %c0_i64 = arith.constant 0 : i64
     %c2_i64 = arith.constant 2 : i64
@@ -33,6 +36,10 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
       : memref<?xf16, #pto.address_space<mat>>, memref<?xf16, #pto.address_space<left>>, i64, i64
     pto.mte_l1_l0b_mx %src_mat, %dst_right_mx, %c16_i64, %c16_i64
       : memref<?xf16, #pto.address_space<mat>>, memref<?xf16, #pto.address_space<right>>, i64, i64
+    pto.mte_l1_l0a %src_hif8, %dst_left_hif8, %c16_i64, %c16_i64, %c0_i64, %c0_i64
+      : memref<?x!pto.hif8, #pto.address_space<mat>>, memref<?x!pto.hif8, #pto.address_space<left>>, i64, i64, i64, i64
+    pto.mte_l1_l0b %src_hif8, %dst_right_hif8, %c16_i64, %c16_i64, %c0_i64, %c0_i64 {transpose = true}
+      : memref<?x!pto.hif8, #pto.address_space<mat>>, memref<?x!pto.hif8, #pto.address_space<right>>, i64, i64, i64, i64
     pto.mte_l1_bt %src_mat, %dst_bias, %c4_i64 nburst(%c2_i64, %c0_i64, %c0_i64)
       : memref<?xf16, #pto.address_space<mat>>, memref<?xf32, #pto.address_space<bias>>, i64, i64, i64, i64
 
@@ -41,11 +48,13 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
 }
 
 // ROUNDTRIP-LABEL: func.func @cube_bridge_load_buffer_like(
-// ROUNDTRIP-SAME: %{{.*}}: !pto.ptr<f16, l1>, %{{.*}}: !pto.ptr<f16, l0a>, %{{.*}}: !pto.ptr<f16, l0b>, %{{.*}}: !pto.ptr<f16, l0a>, %{{.*}}: !pto.ptr<f16, l0b>, %{{.*}}: !pto.ptr<f32, bt>) attributes {pto.kernel} {
+// ROUNDTRIP-SAME: %{{.*}}: !pto.ptr<f16, l1>, %{{.*}}: !pto.ptr<f16, l0a>, %{{.*}}: !pto.ptr<f16, l0b>, %{{.*}}: !pto.ptr<f16, l0a>, %{{.*}}: !pto.ptr<f16, l0b>, %{{.*}}: !pto.ptr<!pto.hif8, l1>, %{{.*}}: !pto.ptr<!pto.hif8, l0a>, %{{.*}}: !pto.ptr<!pto.hif8, l0b>, %{{.*}}: !pto.ptr<f32, bt>) attributes {pto.kernel} {
 // ROUNDTRIP: pto.mte_l1_l0a %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}
 // ROUNDTRIP: pto.mte_l1_l0b %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} {transpose = true}
 // ROUNDTRIP: pto.mte_l1_l0a_mx %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}
 // ROUNDTRIP: pto.mte_l1_l0b_mx %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}
+// ROUNDTRIP: pto.mte_l1_l0a %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : !pto.ptr<!pto.hif8, l1>, !pto.ptr<!pto.hif8, l0a>
+// ROUNDTRIP: pto.mte_l1_l0b %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} {transpose = true} : !pto.ptr<!pto.hif8, l1>, !pto.ptr<!pto.hif8, l0b>
 // ROUNDTRIP: pto.mte_l1_bt %{{.*}}, %{{.*}}, %{{.*}} nburst(%{{.*}}, %{{.*}}, %{{.*}})
 
 // EXPAND-LABEL: func.func @cube_bridge_load_buffer_like(
@@ -53,4 +62,6 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
 // EXPAND: pto.load_cbuf_to_cb
 // EXPAND: pto.load_cbuf_to_ca_mx
 // EXPAND: pto.load_cbuf_to_cb_mx
+// EXPAND: pto.load_cbuf_to_ca
+// EXPAND: pto.load_cbuf_to_cb
 // EXPAND: pto.copy_cbuf_to_bt

@@ -711,7 +711,7 @@ static FailureOr<LoadCbufToCbControl>
 deriveLoadCbufToCbControl(Location loc, Value k, Value n, Type elementType,
                           Value mStart, Value kStart, bool transpose,
                           PatternRewriter &rewriter) {
-  unsigned elemBitWidth = elementType.getIntOrFloatBitWidth();
+  unsigned elemBitWidth = pto::getPTOStorageElemBitWidth(elementType);
   if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
     return failure();
   uint64_t elemBytes = elemBitWidth / 8;
@@ -750,7 +750,7 @@ static FailureOr<LoadCbufToCbControl>
 deriveLoadCbufToCaControl(Location loc, Value m, Value k, Type elementType,
                           Value mStart, Value kStart, bool transpose,
                           PatternRewriter &rewriter) {
-  unsigned elemBitWidth = elementType.getIntOrFloatBitWidth();
+  unsigned elemBitWidth = pto::getPTOStorageElemBitWidth(elementType);
   if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
     return failure();
   uint64_t elemBytes = elemBitWidth / 8;
@@ -1324,7 +1324,8 @@ struct ExpandRightLoadMxPattern : public OpRewritePattern<pto::MteL1L0bMxOp> {
     if (!sourceType)
       return rewriter.notifyMatchFailure(op, "expected typed L1 source");
 
-    unsigned elemBitWidth = sourceType.getElementType().getIntOrFloatBitWidth();
+    unsigned elemBitWidth =
+        pto::getPTOStorageElemBitWidth(sourceType.getElementType());
     if (elemBitWidth == 0 || (elemBitWidth % 8) != 0)
       return rewriter.notifyMatchFailure(op, "unsupported element type");
     uint64_t elemBytes = elemBitWidth / 8;

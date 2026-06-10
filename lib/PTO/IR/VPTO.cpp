@@ -519,10 +519,12 @@ static LogicalResult verifyLdgStgAccess(Operation *op, Type ptrType,
   if (valueType.isF16() || valueType.isBF16() || valueType.isF32() ||
       valueType.isF64())
     return success();
+  if (pto::isPTOFloat8Type(valueType) || pto::isPTOHiFloat8Type(valueType))
+    return success();
 
   return op->emitOpError()
          << "currently supports 8/16/32/64-bit integer and "
-            "f16/bf16/f32/f64 value type";
+            "f16/bf16/f32/f64/fp8/hif8 value type";
 }
 
 LogicalResult PTOLoadOp::verify() {
@@ -1321,6 +1323,8 @@ static std::optional<StringRef> normalizeRoundModeToken(StringRef token) {
     return StringRef("Z");
   if (token == "O" || token == "ROUND_O")
     return StringRef("O");
+  if (token == "H" || token == "ROUND_H")
+    return StringRef("H");
   return std::nullopt;
 }
 
@@ -1365,6 +1369,11 @@ enum class VcvtElemKind {
   F16,
   BF16,
   F32,
+  F8E4M3,
+  F8E5M2,
+  HiF8,
+  F4E1M2x2,
+  F4E2M1x2,
   S8,
   U8,
   S16,
@@ -1374,15 +1383,17 @@ enum class VcvtElemKind {
   S64,
 };
 
+enum class VcvtPartFamily {
+  EvenOdd,
+  Packed4,
+};
+
 struct VcvtContract {
   bool requiresRnd;
   bool requiresSat;
   bool requiresPart;
-};
-
-enum class VcvtPartFamily {
-  EvenOdd,
-  Packed4,
+  std::optional<VcvtPartFamily> partFamily = std::nullopt;
+  const char *allowedRndModes = nullptr;
 };
 
 static VcvtElemKind classifyVcvtElemType(Type type) {
@@ -1392,6 +1403,17 @@ static VcvtElemKind classifyVcvtElemType(Type type) {
     return VcvtElemKind::BF16;
   if (type.isF32())
     return VcvtElemKind::F32;
+  if (type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
+      type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ())
+    return VcvtElemKind::F8E4M3;
+  if (type.isFloat8E5M2() || type.isFloat8E5M2FNUZ())
+    return VcvtElemKind::F8E5M2;
+  if (pto::isPTOHiFloat8Type(type))
+    return VcvtElemKind::HiF8;
+  if (isa<pto::F4E1M2x2Type>(type))
+    return VcvtElemKind::F4E1M2x2;
+  if (isa<pto::F4E2M1x2Type>(type))
+    return VcvtElemKind::F4E2M1x2;
   if (auto intType = dyn_cast<IntegerType>(type)) {
     switch (intType.getWidth()) {
     case 8:
@@ -1420,6 +1442,11 @@ static std::optional<unsigned> getVcvtElemBitWidth(VcvtElemKind kind) {
   case VcvtElemKind::S32:
   case VcvtElemKind::U32:
     return 32;
+  case VcvtElemKind::F8E4M3:
+  case VcvtElemKind::F8E5M2:
+  case VcvtElemKind::HiF8:
+  case VcvtElemKind::F4E1M2x2:
+  case VcvtElemKind::F4E2M1x2:
   case VcvtElemKind::S8:
   case VcvtElemKind::U8:
     return 8;
@@ -1452,11 +1479,27 @@ static bool isValidVcvtPartForFamily(StringRef part, VcvtPartFamily family) {
   return false;
 }
 
+static bool isValidVcvtRoundModeForContract(StringRef roundMode,
+                                            const VcvtContract &contract) {
+  if (!contract.allowedRndModes)
+    return true;
+  return StringRef(contract.allowedRndModes).contains(roundMode);
+}
+
 static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
                                                       VcvtElemKind dst) {
   switch (src) {
   case VcvtElemKind::F32:
     switch (dst) {
+    case VcvtElemKind::F8E4M3:
+    case VcvtElemKind::F8E5M2:
+      return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/true,
+                          /*requiresPart=*/true, VcvtPartFamily::Packed4,
+                          "R"};
+    case VcvtElemKind::HiF8:
+      return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/true,
+                          /*requiresPart=*/true, VcvtPartFamily::Packed4,
+                          "AH"};
     case VcvtElemKind::F16:
     case VcvtElemKind::BF16:
     case VcvtElemKind::S16:
@@ -1471,6 +1514,13 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
     }
   case VcvtElemKind::F16:
     switch (dst) {
+    case VcvtElemKind::F8E4M3:
+    case VcvtElemKind::F8E5M2:
+      return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/true,
+                          /*requiresPart=*/true, std::nullopt, "RAFZC"};
+    case VcvtElemKind::HiF8:
+      return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/true,
+                          /*requiresPart=*/true, std::nullopt, "AH"};
     case VcvtElemKind::F32:
       return VcvtContract{/*requiresRnd=*/false, /*requiresSat=*/false,
                           /*requiresPart=*/true};
@@ -1489,6 +1539,15 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
     }
   case VcvtElemKind::BF16:
     switch (dst) {
+    case VcvtElemKind::F8E4M3:
+    case VcvtElemKind::F8E5M2:
+      return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/true,
+                          /*requiresPart=*/true, std::nullopt, "RAFZC"};
+    case VcvtElemKind::F4E1M2x2:
+    case VcvtElemKind::F4E2M1x2:
+      return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/false,
+                          /*requiresPart=*/true, VcvtPartFamily::Packed4,
+                          "RAFZC"};
     case VcvtElemKind::F16:
       return VcvtContract{/*requiresRnd=*/true, /*requiresSat=*/true,
                           /*requiresPart=*/false};
@@ -1582,6 +1641,25 @@ static std::optional<VcvtContract> lookupVcvtContract(VcvtElemKind src,
     case VcvtElemKind::S32:
       return VcvtContract{/*requiresRnd=*/false, /*requiresSat=*/true,
                           /*requiresPart=*/true};
+    default:
+      return std::nullopt;
+    }
+  case VcvtElemKind::F8E4M3:
+  case VcvtElemKind::F8E5M2:
+  case VcvtElemKind::HiF8:
+    switch (dst) {
+    case VcvtElemKind::F32:
+      return VcvtContract{/*requiresRnd=*/false, /*requiresSat=*/false,
+                          /*requiresPart=*/true, VcvtPartFamily::Packed4};
+    default:
+      return std::nullopt;
+    }
+  case VcvtElemKind::F4E1M2x2:
+  case VcvtElemKind::F4E2M1x2:
+    switch (dst) {
+    case VcvtElemKind::BF16:
+      return VcvtContract{/*requiresRnd=*/false, /*requiresSat=*/false,
+                          /*requiresPart=*/true, VcvtPartFamily::Packed4};
     default:
       return std::nullopt;
     }
@@ -1660,6 +1738,11 @@ static unsigned getIntOrFloatBitWidth(Type type) {
     return intType.getWidth();
   if (auto floatType = dyn_cast<FloatType>(type))
     return floatType.getWidth();
+  if (pto::isPTOFloat8Type(type) || pto::isPTOHiFloat8Type(type) ||
+      pto::isPTOFloat4PackedType(type))
+    return 8;
+  if (pto::isPTOHiFloat8x2Type(type))
+    return 16;
   return 0;
 }
 
@@ -3221,9 +3304,12 @@ LogicalResult VRegType::verify(function_ref<InFlightDiagnostic()> emitError,
     elementBitWidth = intOrFloat.getWidth();
   } else if (auto floatType = mlir::dyn_cast<FloatType>(elementType)) {
     elementBitWidth = floatType.getWidth();
+  } else if (pto::isPTOLowPrecisionType(elementType)) {
+    elementBitWidth = pto::getPTOStorageElemBitWidth(elementType);
   } else {
     return emitError() << "'" << formatVRegType(elementCount, elementType)
-                       << "' expected an integer or floating-point element type";
+                       << "' expected an integer, floating-point, or PTO "
+                          "low-precision element type";
   }
 
   if (elementCount * static_cast<int64_t>(elementBitWidth) != 2048)
@@ -5514,8 +5600,11 @@ LogicalResult VcvtOp::verify() {
 
   if (getRndAttr()) {
     StringRef roundMode = *getRnd();
-    if (!normalizeRoundModeToken(roundMode))
-      return emitOpError("rnd must be one of R/A/F/C/Z/O");
+    auto normalizedRoundMode = normalizeRoundModeToken(roundMode);
+    if (!normalizedRoundMode)
+      return emitOpError("rnd must be one of R/A/F/C/Z/O/H");
+    if (!isValidVcvtRoundModeForContract(*normalizedRoundMode, *contract))
+      return emitOpError("rnd attr is not valid for this vcvt type pair");
   }
   if (static_cast<bool>(getRndAttr()) != contract->requiresRnd) {
     return contract->requiresRnd ? emitOpError("requires rnd attr for this vcvt type pair")
@@ -5537,7 +5626,9 @@ LogicalResult VcvtOp::verify() {
     auto normalizedPart = normalizeVcvtPartToken(part);
     if (!normalizedPart)
       return emitOpError("part must be one of EVEN/ODD/P0/P1/P2/P3");
-    auto partFamily = classifyVcvtPartFamily(*inputElemBits, *resultElemBits);
+    std::optional<VcvtPartFamily> partFamily = contract->partFamily;
+    if (!partFamily)
+      partFamily = classifyVcvtPartFamily(*inputElemBits, *resultElemBits);
     if (!partFamily)
       return emitOpError("part attr is not supported for this vcvt width relation");
     if (!isValidVcvtPartForFamily(*normalizedPart, *partFamily)) {
@@ -5545,7 +5636,8 @@ LogicalResult VcvtOp::verify() {
       case VcvtPartFamily::EvenOdd:
         return emitOpError("part must be EVEN or ODD for 8/16 and 16/32 vcvt forms");
       case VcvtPartFamily::Packed4:
-        return emitOpError("part must be P0, P1, P2, or P3 for 8/32 vcvt forms");
+        return emitOpError(
+            "part must be P0, P1, P2, or P3 for packed vcvt forms");
       }
     }
   }

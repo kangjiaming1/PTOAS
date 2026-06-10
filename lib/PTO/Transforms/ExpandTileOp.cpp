@@ -195,6 +195,11 @@ static std::string getDtypeString(Type elemTy) {
   if (elemTy.isF32()) return "f32";
   if (elemTy.isF16()) return "f16";
   if (elemTy.isBF16()) return "bf16";
+  if (elemTy.isFloat8E4M3FN()) return "f8e4m3";
+  if (elemTy.isFloat8E5M2()) return "f8e5m2";
+  if (isa<pto::HiF8Type>(elemTy)) return "hif8";
+  if (isa<pto::F4E1M2x2Type>(elemTy)) return "f4e1m2x2";
+  if (isa<pto::F4E2M1x2Type>(elemTy)) return "f4e2m1x2";
   if (elemTy.isUnsignedInteger(64)) return "ui64";
   if (elemTy.isUnsignedInteger(32)) return "ui32";
   if (elemTy.isUnsignedInteger(16)) return "ui16";
