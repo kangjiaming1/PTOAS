@@ -1418,6 +1418,19 @@ def explicit_runtime_index_bitwise_event_probe():
     with pto.for_(0, 4, step=1) as i:
         pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=i & 1)
         pto.set_flag(pto.Pipe.MTE2, pto.Pipe.V, event_id=(i | 0) ^ 1)
+        pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=1 & i)
+        pto.set_flag(pto.Pipe.MTE2, pto.Pipe.V, event_id=0 | i)
+        pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=1 ^ i)
+
+
+@pto.jit(target="a5", ast_rewrite=False)
+def explicit_runtime_index_integer_bitwise_event_probe():
+    one = pto.const(1, dtype=pto.i32)
+    zero = pto.const(0, dtype=pto.i32)
+    with pto.for_(0, 4, step=1) as i:
+        pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=i & one)
+        pto.set_flag(pto.Pipe.MTE2, pto.Pipe.V, event_id=zero | i)
+        pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE2, event_id=one ^ i)
 
 
 @pto.jit(target="a5")
@@ -1750,6 +1763,7 @@ def main() -> None:
     public_mask_surface_probe.verify()
     public_sync_surface_probe.verify()
     explicit_runtime_index_bitwise_event_probe.verify()
+    explicit_runtime_index_integer_bitwise_event_probe.verify()
     ast_runtime_index_bitwise_event_probe.verify()
     public_data_movement_surface_probe.verify()
 
@@ -2744,6 +2758,13 @@ def main() -> None:
         explicit_runtime_index_bitwise_event_text,
         "explicit runtime index bitwise event specialization",
     )
+    explicit_runtime_index_integer_bitwise_event_text = (
+        explicit_runtime_index_integer_bitwise_event_probe.compile().mlir_text()
+    )
+    expect_parse_roundtrip_and_verify(
+        explicit_runtime_index_integer_bitwise_event_text,
+        "explicit runtime index/integer bitwise event specialization",
+    )
     ast_runtime_index_bitwise_event_text = ast_runtime_index_bitwise_event_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(
         ast_runtime_index_bitwise_event_text,
@@ -2773,12 +2794,32 @@ def main() -> None:
     expect("arith.ori" in explicit_runtime_index_bitwise_event_text, "explicit pto.for_ index | event id should lower to arith.ori")
     expect("arith.xori" in explicit_runtime_index_bitwise_event_text, "explicit pto.for_ index ^ event id should lower to arith.xori")
     expect(
-        explicit_runtime_index_bitwise_event_text.count("pto.wait_flag_dyn") == 1,
+        re.search(r"arith\.andi .* : index", explicit_runtime_index_bitwise_event_text) is not None,
+        "index & literal event id should stay in the index type domain",
+    )
+    expect(
+        "arith.index_cast" not in explicit_runtime_index_bitwise_event_text,
+        "index/literal bitwise event ids should not lower through fixed-width integer casts",
+    )
+    expect(
+        explicit_runtime_index_bitwise_event_text.count("pto.wait_flag_dyn") == 3,
         "explicit pto.for_ index bitwise event id should lower to pto.wait_flag_dyn",
     )
     expect(
-        explicit_runtime_index_bitwise_event_text.count("pto.set_flag_dyn") == 1,
+        explicit_runtime_index_bitwise_event_text.count("pto.set_flag_dyn") == 2,
         "explicit pto.for_ index bitwise event id should lower to pto.set_flag_dyn",
+    )
+    expect(
+        explicit_runtime_index_integer_bitwise_event_text.count("arith.index_cast") >= 2,
+        "index/integer bitwise event ids should coerce integer runtime scalars to index",
+    )
+    expect(
+        explicit_runtime_index_integer_bitwise_event_text.count("pto.wait_flag_dyn") == 2,
+        "index/integer bitwise event ids should lower waits to pto.wait_flag_dyn",
+    )
+    expect(
+        explicit_runtime_index_integer_bitwise_event_text.count("pto.set_flag_dyn") == 1,
+        "index/integer bitwise event ids should lower sets to pto.set_flag_dyn",
     )
     expect("arith.andi" in ast_runtime_index_bitwise_event_text, "AST rewritten range loop index & event id should lower to arith.andi")
     expect(
