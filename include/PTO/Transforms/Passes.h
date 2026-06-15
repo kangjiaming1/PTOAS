@@ -103,8 +103,8 @@ std::unique_ptr<Pass> createPTOValidateVPTOEmissionIRPass();
 std::unique_ptr<Pass> createExpandTileOpPass();
 std::unique_ptr<Pass> createExpandTileOpPass(const ExpandTileOpOptions &options);
 std::unique_ptr<Pass> createFoldTileBufIntrinsicsPass();
-std::unique_ptr<Pass> createPTOCanonicalizeIRPass();
 std::unique_ptr<Pass> createFoldTileBufIntrinsicsPass(llvm::StringRef foldMode);
+std::unique_ptr<Pass> createPTOCanonicalizeIRPass();
 std::unique_ptr<Pass>
 createPTOInlineLibCallPass(const PTOInlineLibCallOptions &options = {});
 void registerPTOViewToMemrefPass();
