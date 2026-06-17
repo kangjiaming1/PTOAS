@@ -136,7 +136,8 @@ static LogicalResult verifyVecTileCommonA5(Operation *op, Type ty,
 static LogicalResult verifyVecTileStorage(Operation *op, Type ty,
                                           StringRef name);
 static LogicalResult verifyNDStyleVecTile(Operation *op, Type ty,
-                                          StringRef name);
+                                          StringRef name,
+                                          bool allowLowPrecision = false);
 static LogicalResult verifyColReductionValidRegion(Operation *op, Type srcTy,
                                                    Type dstTy,
                                                    bool requireNonZeroSrc);
@@ -1696,6 +1697,8 @@ static bool isSupportedGatherElemTypeA2A3(Type ty) {
 static bool isSupportedGatherElemTypeA5(Type ty) {
   if (isSupportedGatherElemTypeA2A3(ty) || ty.isBF16())
     return true;
+  if (isPTOHiFloat8Type(ty))
+    return true;
   if (auto ft = dyn_cast<FloatType>(ty)) {
     unsigned width = ft.getWidth();
     return width == 8;
@@ -2170,8 +2173,9 @@ static LogicalResult verifyTRowArgReductionOpA5(Operation *op, Type srcTy,
   return success();
 }
 
-static LogicalResult verifyNDStyleVecTile(Operation *op, Type ty, StringRef name) {
-  if (failed(verifyTileBufCommon(op, ty, name)))
+static LogicalResult verifyNDStyleVecTile(Operation *op, Type ty, StringRef name,
+                                          bool allowLowPrecision) {
+  if (failed(verifyTileBufCommon(op, ty, name, allowLowPrecision)))
     return failure();
   auto as = getPTOMemorySpaceEnum(ty);
   if (!as || *as != pto::AddressSpace::VEC)
@@ -3795,6 +3799,8 @@ static bool isSupportedMGatherMScatterPayloadElemType(Operation *op, Type ty) {
     return true;
   if (!isTargetArchA5(op))
     return false;
+  if (isPTOHiFloat8Type(ty))
+    return true;
   return ty.isFloat8E4M3() || ty.isFloat8E4M3FN() || ty.isFloat8E4M3FNUZ() ||
          ty.isFloat8E4M3B11FNUZ() || ty.isFloat8E5M2() || ty.isFloat8E5M2FNUZ();
 }
@@ -6092,6 +6098,9 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
     return ty.isInteger(8) || ty.isF16() || ty.isBF16() || ty.isF32();
   };
   auto isA5ExtractElemType = [&](Type ty) -> bool {
+    if (isPTOFloat8Type(ty) || isPTOHiFloat8Type(ty) ||
+        isPTOFloat4PackedType(ty))
+      return true;
     if (auto it = dyn_cast<IntegerType>(ty))
       return it.getWidth() == 8;
     if (auto ft = dyn_cast<FloatType>(ty))
@@ -6102,7 +6111,8 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
     return ty.getBLayoutValueI32() == static_cast<int32_t>(pto::BLayout::RowMajor) &&
            ty.getSLayoutValueI32() == static_cast<int32_t>(pto::SLayout::NoneBox);
   };
-  auto verifyCommon = [&]() -> FailureOr<std::tuple<Type, Type, pto::TileBufType,
+  auto verifyCommon = [&](bool allowLowPrecision)
+      -> FailureOr<std::tuple<Type, Type, pto::TileBufType,
                                                     pto::TileBufType, Type, Type,
                                                     std::optional<pto::AddressSpace>,
                                                     std::optional<pto::AddressSpace>>> {
@@ -6112,8 +6122,8 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
     auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
     if (!srcTb || !dstTb)
       return emitOpError("expects src and dst to be !pto.tile_buf");
-    if (failed(verifyTileBufCommon(*this, srcTy, "src", /*allowLowPrecision=*/true)) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst", /*allowLowPrecision=*/true)) ||
+    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowLowPrecision)) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst", allowLowPrecision)) ||
         failed(verifyNonNegativeIndexRowCol(
             *getOperation(), getIndexRow(), getIndexCol(),
             /*includeIndexAndIntOpsInConstFold=*/false)) ||
@@ -6131,7 +6141,7 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
                            srcSpace, dstSpace);
   };
   auto verifyA2A3 = [&]() -> LogicalResult {
-    auto common = verifyCommon();
+    auto common = verifyCommon(/*allowLowPrecision=*/false);
     if (failed(common))
       return failure();
     auto [srcTy, dstTy, srcTb, dstTb, srcElem, dstElem, srcSpace, dstSpace] =
@@ -6163,7 +6173,7 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
     return mlir::success();
   };
   auto verifyA5 = [&]() -> LogicalResult {
-    auto common = verifyCommon();
+    auto common = verifyCommon(/*allowLowPrecision=*/true);
     if (failed(common))
       return failure();
     auto [srcTy, dstTy, srcTb, dstTb, srcElem, dstElem, srcSpace, dstSpace] =
@@ -6218,6 +6228,9 @@ mlir::LogicalResult mlir::pto::TInsertOp::verify() {
            ty.getSLayoutValueI32() == static_cast<int32_t>(pto::SLayout::NoneBox);
   };
   auto isA5SupportedVecElemType = [&](Type ty) -> bool {
+    if (isPTOFloat8Type(ty) || isPTOHiFloat8Type(ty) ||
+        isPTOFloat4PackedType(ty))
+      return true;
     if (auto it = dyn_cast<IntegerType>(ty))
       return it.getWidth() == 8 || it.getWidth() == 32;
     if (auto ft = dyn_cast<FloatType>(ty))
@@ -6227,7 +6240,8 @@ mlir::LogicalResult mlir::pto::TInsertOp::verify() {
   auto isA2A3VecInsertElemType = [&](Type ty) -> bool {
     return ty.isInteger(8) || ty.isF16() || ty.isBF16() || ty.isF32();
   };
-  auto verifyCommon = [&]() -> FailureOr<std::tuple<Type, Type, pto::TileBufType,
+  auto verifyCommon = [&](bool allowLowPrecision)
+      -> FailureOr<std::tuple<Type, Type, pto::TileBufType,
                                                     pto::TileBufType, Type, Type,
                                                     std::optional<pto::AddressSpace>,
                                                     std::optional<pto::AddressSpace>>> {
@@ -6237,8 +6251,8 @@ mlir::LogicalResult mlir::pto::TInsertOp::verify() {
     auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
     if (!srcTb || !dstTb)
       return emitOpError("expects src and dst to be !pto.tile_buf");
-    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")) ||
+    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowLowPrecision)) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst", allowLowPrecision)) ||
         failed(verifyNonNegativeIndexRowCol(
             *getOperation(), getIndexRow(), getIndexCol(),
             /*includeIndexAndIntOpsInConstFold=*/true)) ||
@@ -6254,7 +6268,7 @@ mlir::LogicalResult mlir::pto::TInsertOp::verify() {
                            srcSpace, dstSpace);
   };
   auto verifyA2A3 = [&]() -> LogicalResult {
-    auto common = verifyCommon();
+    auto common = verifyCommon(/*allowLowPrecision=*/false);
     if (failed(common))
       return failure();
     auto [srcTy, dstTy, srcTb, dstTb, srcElem, dstElem, srcSpace, dstSpace] =
@@ -6283,7 +6297,7 @@ mlir::LogicalResult mlir::pto::TInsertOp::verify() {
     return success();
   };
   auto verifyA5 = [&]() -> LogicalResult {
-    auto common = verifyCommon();
+    auto common = verifyCommon(/*allowLowPrecision=*/true);
     if (failed(common))
       return failure();
     auto [srcTy, dstTy, srcTb, dstTb, srcElem, dstElem, srcSpace, dstSpace] =
@@ -6394,7 +6408,8 @@ static LogicalResult verifyA5MxTypeTriple(Operation *op, Type lhsTy, Type rhsTy,
 
 static bool isA5VectorPreQuantTypePair(Type srcElem, Type dstElem) {
   if (srcElem.isF32())
-    return dstElem.isInteger(8) || isA5Fp8LikeType(dstElem) || dstElem.isF16() ||
+    return dstElem.isInteger(8) || isA5Fp8LikeType(dstElem) ||
+           isPTOHiFloat8Type(dstElem) || dstElem.isF16() ||
            dstElem.isBF16() || dstElem.isF32();
   if (srcElem.isInteger(32))
     return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isBF16();
@@ -6402,7 +6417,8 @@ static bool isA5VectorPreQuantTypePair(Type srcElem, Type dstElem) {
 }
 
 mlir::LogicalResult mlir::pto::TExtractFPOp::verify() {
-  auto verifyCommon = [&]() -> FailureOr<std::tuple<Type, Type, Type, pto::TileBufType,
+  auto verifyCommon = [&](bool allowLowPrecision)
+      -> FailureOr<std::tuple<Type, Type, Type, pto::TileBufType,
                                                     pto::TileBufType, pto::TileBufType,
                                                     pto::AddressSpace, pto::AddressSpace,
                                                     pto::AddressSpace>> {
@@ -6414,9 +6430,9 @@ mlir::LogicalResult mlir::pto::TExtractFPOp::verify() {
     auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
     if (!srcTb || !fpTb || !dstTb)
       return emitOpError("expects src, fp, and dst to be !pto.tile_buf");
-    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
-        failed(verifyTileBufCommon(*this, fpTy, "fp")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")) ||
+    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowLowPrecision)) ||
+        failed(verifyTileBufCommon(*this, fpTy, "fp", allowLowPrecision)) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst", allowLowPrecision)) ||
         failed(verifyNonNegativeIndexRowCol(
             *getOperation(), getIndexRow(), getIndexCol(),
             /*includeIndexAndIntOpsInConstFold=*/true)) ||
@@ -6443,7 +6459,7 @@ mlir::LogicalResult mlir::pto::TExtractFPOp::verify() {
                            *fpSpace, *dstSpace);
   };
   auto verifyA2A3 = [&]() -> LogicalResult {
-    auto common = verifyCommon();
+    auto common = verifyCommon(/*allowLowPrecision=*/false);
     if (failed(common))
       return failure();
     auto [srcTy, fpTy, dstTy, srcTb, fpTb, dstTb, srcSpace, fpSpace, dstSpace] =
@@ -6463,7 +6479,7 @@ mlir::LogicalResult mlir::pto::TExtractFPOp::verify() {
     return success();
   };
   auto verifyA5 = [&]() -> LogicalResult {
-    auto common = verifyCommon();
+    auto common = verifyCommon(/*allowLowPrecision=*/true);
     if (failed(common))
       return failure();
     auto [srcTy, fpTy, dstTy, srcTb, fpTb, dstTb, srcSpace, fpSpace, dstSpace] =
@@ -6487,7 +6503,8 @@ mlir::LogicalResult mlir::pto::TExtractFPOp::verify() {
 }
 
 mlir::LogicalResult mlir::pto::TInsertFPOp::verify() {
-  auto verifyCommon = [&]() -> FailureOr<std::tuple<Type, Type, Type, pto::TileBufType,
+  auto verifyCommon = [&](bool allowLowPrecision)
+      -> FailureOr<std::tuple<Type, Type, Type, pto::TileBufType,
                                                     pto::TileBufType, pto::TileBufType,
                                                     pto::AddressSpace, pto::AddressSpace,
                                                     pto::AddressSpace>> {
@@ -6499,9 +6516,9 @@ mlir::LogicalResult mlir::pto::TInsertFPOp::verify() {
     auto dstTb = dyn_cast<pto::TileBufType>(dstTy);
     if (!srcTb || !fpTb || !dstTb)
       return emitOpError("expects src, fp, and dst to be !pto.tile_buf");
-    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
-        failed(verifyTileBufCommon(*this, fpTy, "fp")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")) ||
+    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowLowPrecision)) ||
+        failed(verifyTileBufCommon(*this, fpTy, "fp", allowLowPrecision)) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst", allowLowPrecision)) ||
         failed(verifyNonNegativeIndexRowCol(
             *getOperation(), getIndexRow(), getIndexCol(),
             /*includeIndexAndIntOpsInConstFold=*/true)) ||
@@ -6528,7 +6545,7 @@ mlir::LogicalResult mlir::pto::TInsertFPOp::verify() {
                            *fpSpace, *dstSpace);
   };
   auto verifyA2A3 = [&]() -> LogicalResult {
-    auto common = verifyCommon();
+    auto common = verifyCommon(/*allowLowPrecision=*/false);
     if (failed(common))
       return failure();
     auto [srcTy, fpTy, dstTy, srcTb, fpTb, dstTb, srcSpace, fpSpace, dstSpace] =
@@ -6550,7 +6567,7 @@ mlir::LogicalResult mlir::pto::TInsertFPOp::verify() {
     return success();
   };
   auto verifyA5 = [&]() -> LogicalResult {
-    auto common = verifyCommon();
+    auto common = verifyCommon(/*allowLowPrecision=*/true);
     if (failed(common))
       return failure();
     auto [srcTy, fpTy, dstTy, srcTb, fpTb, dstTb, srcSpace, fpSpace, dstSpace] =
@@ -6700,6 +6717,8 @@ mlir::LogicalResult mlir::pto::TFillPadInplaceOp::verify() {
 
 llvm::LogicalResult mlir::pto::TGatherOp::verify() {
   auto isSupportedGatherElemTypeA5Index = [&](Type ty) -> bool {
+    if (isPTOFloat8Type(ty))
+      return true;
     if (ty.isF16() || ty.isF32())
       return true;
     if (auto it = dyn_cast<IntegerType>(ty)) {
@@ -6712,8 +6731,8 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
   auto verifyMaskForm = [&](bool allowA5MaskTypes) -> LogicalResult {
     Type srcTy = getSrc().getType();
     Type dstTy = getDst().getType();
-    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")))
+    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowA5MaskTypes)) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst", allowA5MaskTypes)))
       return failure();
 
     Type srcElem = getElemTy(srcTy);
@@ -6760,8 +6779,8 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
     Type dstTy = getDst().getType();
     Type idxTy = getIndices().getType();
     Type tmpTy = getTmp().getType();
-    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")) ||
+    if (failed(verifyTileBufCommon(*this, srcTy, "src", allowA5ElemTypes)) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst", allowA5ElemTypes)) ||
         failed(verifyTileBufCommon(*this, idxTy, "indices")) ||
         failed(verifyTileBufCommon(*this, tmpTy, "tmp")))
       return failure();
@@ -7208,9 +7227,9 @@ mlir::LogicalResult mlir::pto::TMovFPOp::verify() {
     Type srcTy = getSrc().getType();
     Type fpTy  = getFp().getType();
     Type dstTy = getDst().getType();
-    if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
-        failed(verifyTileBufCommon(*this, fpTy, "fp")) ||
-        failed(verifyTileBufCommon(*this, dstTy, "dst")))
+    if (failed(verifyTileBufCommon(*this, srcTy, "src", /*allowLowPrecision=*/true)) ||
+        failed(verifyTileBufCommon(*this, fpTy, "fp", /*allowLowPrecision=*/true)) ||
+        failed(verifyTileBufCommon(*this, dstTy, "dst", /*allowLowPrecision=*/true)))
       return failure();
     auto srcElemTy = getElemTy(srcTy);
     auto srcIntTy = dyn_cast<IntegerType>(srcElemTy);
@@ -8028,7 +8047,9 @@ LogicalResult MScatterOp::verify() {
       getPTOTypeRank(memTy) == -1)
     return emitOpError("expects src, idx, and mem to use supported PTO shapes");
 
-  if (failed(verifyNDStyleVecTile(*this, srcTy, "src")) ||
+  if (failed(verifyNDStyleVecTile(
+          *this, srcTy, "src",
+          /*allowLowPrecision=*/isTargetArchA5(getOperation()))) ||
       failed(verifyMGatherMScatterIdxTile(getOperation(), idxTy, "idx")))
     return failure();
 
@@ -8203,7 +8224,9 @@ LogicalResult MGatherOp::verify() {
     return emitOpError("expects scratch operand only on GM->L1 (loc=mat) "
                        "mgather");
 
-  if (failed(verifyNDStyleVecTile(*this, dstTy, "dst")) ||
+  if (failed(verifyNDStyleVecTile(
+          *this, dstTy, "dst",
+          /*allowLowPrecision=*/isTargetArchA5(getOperation()))) ||
       failed(verifyMGatherMScatterIdxTile(getOperation(), idxTy, "idx")))
     return failure();
 
@@ -9083,7 +9106,7 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
       if (getOffset())
         return emitOpError()
                << "INT8_SYM quantization must not have an offset operand";
-    } else {
+    } else if (getQuantType() == mlir::pto::QuantType::INT8_ASYM) {
       // INT8_ASYM
       if (!dstIntTy || dstIntTy.getWidth() != 8)
         return emitOpError()
@@ -9091,6 +9114,8 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
       if (!getOffset())
         return emitOpError()
                << "INT8_ASYM quantization requires an offset operand";
+    } else {
+      return emitOpError("expects plain tquant quant_type to be INT8_SYM or INT8_ASYM; use tquant.mx for MX quantization");
     }
     return success();
   };
@@ -9136,6 +9161,93 @@ mlir::LogicalResult mlir::pto::TQuantOp::verify() {
 
   auto verifyA5 = [&]() -> LogicalResult {
     return verifyCommon();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
+mlir::LogicalResult mlir::pto::TQuantMxOp::verify() {
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    return emitOpError("tquant.mx is only supported on A5");
+  };
+
+  auto verifyA5 = [&]() -> LogicalResult {
+    if (shouldBypassDecodedMemrefVerifier(getOperation()))
+      return success();
+
+    Type srcTy = getSrc().getType();
+    Type dstTy = getDst().getType();
+    Type expTy = getExp().getType();
+    Type maxTy = getMax().getType();
+    Type scalingTy = getScaling().getType();
+    if (failed(verifyNDStyleVecTile(*this, srcTy, "src")) ||
+        failed(verifyNDStyleVecTile(*this, dstTy, "dst", /*allowLowPrecision=*/true)) ||
+        failed(verifyNDStyleVecTile(*this, expTy, "exp")) ||
+        failed(verifyNDStyleVecTile(*this, maxTy, "max")) ||
+        failed(verifyNDStyleVecTile(*this, scalingTy, "scaling")))
+      return failure();
+
+    auto quantType = getQuantType();
+    if (quantType != mlir::pto::QuantType::MXFP8 &&
+        quantType != mlir::pto::QuantType::MXFP4_E2M1)
+      return emitOpError("expects quant_type to be MXFP8 or MXFP4_E2M1");
+
+    Type srcElem = getElemTy(srcTy);
+    Type dstElem = getElemTy(dstTy);
+    Type expElem = getElemTy(expTy);
+    Type maxElem = getElemTy(maxTy);
+    Type scalingElem = getElemTy(scalingTy);
+
+    if (!(srcElem.isF32() || srcElem.isF16() || srcElem.isBF16()))
+      return emitOpError("expects src element type to be f32/f16/bf16");
+    if (!expElem.isInteger(8))
+      return emitOpError("expects exp element type to be i8/ui8");
+    if (maxElem != srcElem)
+      return emitOpError("expects max element type to match src element type");
+    if (scalingElem != srcElem)
+      return emitOpError("expects scaling element type to match src element type");
+
+    if (quantType == mlir::pto::QuantType::MXFP8) {
+      if (!dstElem.isInteger(8))
+        return emitOpError("expects MXFP8 dst element type to be i8/ui8");
+    } else {
+      if (!isPTOFloat4PackedType(dstElem))
+        return emitOpError("expects MXFP4_E2M1 dst element type to be !pto.f4E2M1x2");
+      if (!(srcElem.isF16() || srcElem.isBF16()))
+        return emitOpError("expects MXFP4_E2M1 src element type to be f16/bf16");
+      if (!isa<pto::F4E2M1x2Type>(dstElem))
+        return emitOpError("expects MXFP4_E2M1 dst element type to be !pto.f4E2M1x2");
+    }
+
+    auto srcValid = getValidShapeVec(srcTy);
+    auto expValid = getValidShapeVec(expTy);
+    auto maxValid = getValidShapeVec(maxTy);
+    auto scalingValid = getValidShapeVec(scalingTy);
+    if (srcValid.size() != 2 || expValid.size() != 2 || maxValid.size() != 2 ||
+        scalingValid.size() != 2)
+      return emitOpError("expects rank-2 valid_shape for src/dst/exp/max/scaling");
+    if (failed(verifyTileBufSameValidShape(*this, srcTy, scalingTy, "src", "scaling")) ||
+        failed(verifyTileBufSameElemType(*this, srcTy, maxTy, "src", "max")))
+      return failure();
+
+    int64_t srcRows = srcValid[0];
+    int64_t srcCols = srcValid[1];
+    if (srcCols != ShapedType::kDynamic && srcCols % 32 != 0)
+      return emitOpError("expects src valid_shape[1] to be a multiple of 32 for tquant.mx");
+    if (srcRows != ShapedType::kDynamic && srcCols != ShapedType::kDynamic) {
+      int64_t groups = (srcRows * srcCols) / 32;
+      int64_t expElems = expValid[0] == ShapedType::kDynamic || expValid[1] == ShapedType::kDynamic
+                             ? ShapedType::kDynamic
+                             : expValid[0] * expValid[1];
+      int64_t maxElems = maxValid[0] == ShapedType::kDynamic || maxValid[1] == ShapedType::kDynamic
+                             ? ShapedType::kDynamic
+                             : maxValid[0] * maxValid[1];
+      if (expElems != ShapedType::kDynamic && expElems != groups)
+        return emitOpError("expects exp valid element count to equal src valid elements / 32");
+      if (maxElems != ShapedType::kDynamic && maxElems != groups)
+        return emitOpError("expects max valid element count to equal src valid elements / 32");
+    }
+    return success();
   };
 
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
@@ -12816,6 +12928,15 @@ void TQuantOp::getEffects(
   if (!offsetRange.empty())
     PTO_ADD_READ(offsetRange[0]);
   PTO_ADD_WRITE(getDstMutable());
+}
+
+void TQuantMxOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getDstMutable());
+  PTO_ADD_WRITE(getExpMutable());
+  PTO_ADD_WRITE(getMaxMutable());
+  PTO_ADD_WRITE(getScalingMutable());
 }
 PTO_DEFINE_TERNARY_EFFECTS(TDequantOp, getSrcMutable(), getScaleMutable(),
                            getOffsetMutable(), getDstMutable())

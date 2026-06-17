@@ -9654,6 +9654,68 @@ struct PTOQuantToEmitC : public OpConversionPattern<pto::TQuantOp> {
     return success();
   }
 };
+
+struct PTOQuantMxToEmitC : public OpConversionPattern<pto::TQuantMxOp> {
+  using OpConversionPattern<pto::TQuantMxOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TQuantMxOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+
+    Value dst = peelUnrealized(adaptor.getDst());
+    Value src = peelUnrealized(adaptor.getSrc());
+    Value exp = peelUnrealized(adaptor.getExp());
+    Value max = peelUnrealized(adaptor.getMax());
+    Value scaling = peelUnrealized(adaptor.getScaling());
+
+    auto makePtr = [&](Value v) -> Value {
+      auto ot = mlir::dyn_cast<emitc::OpaqueType>(v.getType());
+      if (!ot)
+        return {};
+      return rewriter.create<emitc::ApplyOp>(
+                         loc, emitc::PointerType::get(ot), "&", v)
+          .getResult();
+    };
+
+    Value expPtr = makePtr(exp);
+    Value maxPtr = makePtr(max);
+    Value scalingPtr = makePtr(scaling);
+
+    std::string quantTypeStr =
+        op.getQuantType() == pto::QuantType::MXFP8
+            ? "pto::QuantType::MXFP8"
+            : "pto::QuantType::MXFP4_E2M1";
+
+    ArrayAttr templateArgs;
+    auto dstOT = mlir::dyn_cast<emitc::OpaqueType>(dst.getType());
+    auto srcOT = mlir::dyn_cast<emitc::OpaqueType>(src.getType());
+    auto expOT = mlir::dyn_cast<emitc::OpaqueType>(exp.getType());
+    auto maxOT = mlir::dyn_cast<emitc::OpaqueType>(max.getType());
+    auto scalingOT = mlir::dyn_cast<emitc::OpaqueType>(scaling.getType());
+    if (dstOT && srcOT && expOT && maxOT && scalingOT) {
+      templateArgs = rewriter.getArrayAttr({
+          emitc::OpaqueAttr::get(ctx, quantTypeStr),
+          emitc::OpaqueAttr::get(ctx, dstOT.getValue().str()),
+          emitc::OpaqueAttr::get(ctx, srcOT.getValue().str()),
+          emitc::OpaqueAttr::get(ctx, expOT.getValue().str()),
+          emitc::OpaqueAttr::get(ctx, maxOT.getValue().str()),
+          emitc::OpaqueAttr::get(ctx, scalingOT.getValue().str()),
+      });
+    } else {
+      templateArgs = ArrayAttr{};
+    }
+
+    SmallVector<Value> operands{dst, src, expPtr, maxPtr, scalingPtr};
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TQUANT",
+        /*args=*/ArrayAttr{}, /*templateArgs=*/templateArgs,
+        /*operands=*/operands);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 struct PTODequantToEmitC : public OpConversionPattern<pto::TDequantOp> {
   using OpConversionPattern<pto::TDequantOp>::OpConversionPattern;
 
@@ -13248,7 +13310,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOGatherToEmitC>(typeConverter, ctx);
   patterns.add<PTOGatherbToEmitC>(typeConverter, ctx);
   patterns.add<PTOMovFPToEmitC>(typeConverter, ctx);
-  patterns.add<PTOQuantToEmitC>(typeConverter, ctx);
+  patterns.add<PTOQuantToEmitC,
+               PTOQuantMxToEmitC>(typeConverter, ctx);
   patterns.add<PTODequantToEmitC>(typeConverter, ctx);
   patterns.add<PTOOrsToEmitC>(typeConverter, ctx);
   patterns.add<PTOLogToEmitC>(typeConverter, ctx);

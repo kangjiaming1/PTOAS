@@ -8355,6 +8355,7 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 
 - `src` element type must be `f32`.
 - `dst` element type must be `i8` (`INT8_SYM`) or `ui8` (`INT8_ASYM`).
+- `pto.tquant` only models the plain INT8 quantization forms. MX quantization uses `pto.tquant.mx`.
 - A2/A3: `src` and `dst` must use row-major layout.
 
 **Hardware Mapping:**
@@ -8367,6 +8368,62 @@ dst[i, j] = Quantize(src[i, j]; fp, quant_type)
 pto.tquant ins(%src, %fp : !pto.tile_buf<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
            {quant_type = #pto<quant_type INT8_SYM>}
+```
+
+---
+
+##### `pto.tquant.mx` - MX Quantize Tile
+
+**Summary:** A5-only MX quantization form. Quantizes a vector tile into MXFP8 or MXFP4_E2M1 and materializes the auxiliary `exp`, `max`, and `scaling` tiles required by PTO-ISA MX quantization.
+
+**Semantics:**
+
+```
+dst, exp, max, scaling = QuantizeMX(src; quant_type)
+```
+
+- `MXFP8`: source elements are `f32`, `f16`, or `bf16`; destination elements are `i8/ui8`.
+- `MXFP4_E2M1`: source elements are `f16` or `bf16`; destination elements are `!pto.f4E2M1x2`.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src` | `pto.tile_buf` | Source vec tile |
+| `dst` | `pto.tile_buf` | Quantized output tile |
+| `exp` | `pto.tile_buf` | Exponent output tile |
+| `max` | `pto.tile_buf` | Per-group max output tile |
+| `scaling` | `pto.tile_buf` | Scaling output tile |
+
+**Attributes:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `quant_type` | `#pto.quant_type` | `MXFP8` or `MXFP4_E2M1` |
+
+**Results:** None. Writes into `dst`, `exp`, `max`, and `scaling` via DPS pattern.
+
+**Constraints & Verification:**
+
+- Supported only on A5 targets.
+- `src`, `dst`, `exp`, `max`, and `scaling` must all be vec ND tiles.
+- `scaling` must have the same element type and valid shape as `src`.
+- `max` must have the same element type as `src`.
+- `exp` must use `i8/ui8` element type.
+- `src.valid_shape[1]` must be a multiple of 32.
+- `exp` and `max` valid element counts must equal `src.valid elements / 32` when statically known.
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+
+**Basic Example:**
+
+```mlir
+pto.tquant.mx ins(%src : !pto.tile_buf<...>)
+              outs(%dst, %exp, %max, %scaling : !pto.tile_buf<...>, !pto.tile_buf<...>,
+                                                  !pto.tile_buf<...>, !pto.tile_buf<...>)
+              {quant_type = #pto<quant_type MXFP8>}
 ```
 
 ---
