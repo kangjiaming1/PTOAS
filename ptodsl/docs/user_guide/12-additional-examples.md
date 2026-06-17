@@ -269,7 +269,16 @@ This pattern extends directly to batch-GEMM: pass a grid of `batch` and use `pto
 
 ### 12.3.4 Comparison with explicit-mode orchestration
 
-For reference, the same GEMM could be written in `mode="explicit"` when the kernel needs micro-instruction control. The direct-call path used above is recommended for most users; explicit mode is for cases that need hand-authored instruction scheduling and ordering.
+This example keeps `mode="explicit"` because the named Cube helper directly
+authors explicit-only surfaces such as `mte_l1_l0a`, `mte_l1_l0b`, and
+`mte_l0c_ub`. Even though the top-level `@pto.jit` body itself stays fairly
+tile-centric, the enclosing kernel still has to opt into explicit mode so that
+the called sub-kernel is legal.
+
+For most users, the direct-call structure shown above is still the recommended
+pattern: keep the orchestration simple, let the named Cube helper own the
+micro-instruction sequence, and only add more top-level explicit scheduling
+when you truly need hand-authored DMA ordering or phase control.
 
 ## 12.4 Online normalization with loop-carried state
 

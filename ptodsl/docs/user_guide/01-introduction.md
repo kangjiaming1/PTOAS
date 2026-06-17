@@ -243,4 +243,3 @@ Chapter 11 walks through this example in full detail.
 | 11 | Flash attention walkthrough |
 | 12 | Additional examples |
 | 13 | SIMT micro-ops |
-| 14 | Common errors and compatibility notes |

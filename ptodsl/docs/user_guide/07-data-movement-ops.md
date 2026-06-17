@@ -84,6 +84,13 @@ Inside explicit-mode orchestration, data movement between memory spaces is expre
 
 All four share a common structure: a required innermost `nburst(...)` group that defines the repeated burst transfer, plus optional outer `loop(...)` groups for multi-level repetition. `pto.mte_gm_ub` additionally supports `pad(...)` for UB row padding.
 
+For day-to-day explicit-mode authoring, PTODSL also exposes the shorthand
+wrappers `pto.mte_load(...)` and `pto.mte_store(...)`. They are ptr-based
+aliases for the canonical `pto.mte_gm_ub(...)` and `pto.mte_ub_gm(...)`
+surfaces and accept the same grouped-DMA shape arguments. Later walkthroughs
+use the shorthand names because they read more naturally in orchestration code;
+this chapter documents the underlying canonical operations.
+
 ### 7.2.1 GM → UB: `pto.mte_gm_ub`
 
 #### `pto.mte_gm_ub(gm_src: PtrType, ub_dst: PtrType, l2_cache_ctl: int, len_burst: int, *, nburst: tuple[int, int, int], loops: list[tuple[int, int, int]] | None = None, pad: tuple[ScalarType, int, int] | tuple[ScalarType] | None = None) -> None`
@@ -96,7 +103,7 @@ All four share a common structure: a required innermost `nburst(...)` group that
 |-----------|------|-------------|
 | `gm_src` | `PtrType` (gm) | GM source pointer |
 | `ub_dst` | `PtrType` (ub) | UB destination pointer (must be 32B-aligned) |
-| `l2_cache_ctl` | `int` | L2 cache allocate control (2 bits) |
+| `l2_cache_ctl` | `int` | L2 cache allocate control (2 bits). PTODSL forwards the integer verbatim; most kernels should pass `0` unless they are matching a backend-specific cache policy |
 | `len_burst` | `int` | Contiguous bytes transferred per burst row |
 | `nburst` | `tuple[int, int, int]` | `(n_burst, src_stride, dst_stride)` — innermost burst group (required) |
 | `loops` | `list[tuple[int, int, int]]` or `None` | Optional outer loop groups, each `(count, src_stride, dst_stride)`. Ordered inner to outer |
