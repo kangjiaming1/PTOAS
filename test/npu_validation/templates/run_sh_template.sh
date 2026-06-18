@@ -18,6 +18,117 @@ BUILD_DIR="${BUILD_DIR:-build}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+append_unique_colon_item() {
+  local list="$1"
+  local item="$2"
+  [[ -n "${item}" && -d "${item}" ]] || {
+    echo "${list}"
+    return 0
+  }
+  if [[ -z "${list}" ]]; then
+    echo "${item}"
+    return 0
+  fi
+  case ":${list}:" in
+    *":${item}:"*) echo "${list}" ;;
+    *) echo "${list}:${item}" ;;
+  esac
+}
+
+list_contains_file() {
+  local list="$1"
+  local file_name="$2"
+  local dir
+  IFS=':' read -r -a _pto_list_dirs <<< "${list}"
+  for dir in "${_pto_list_dirs[@]}"; do
+    [[ -n "${dir}" && -e "${dir}/${file_name}" ]] && return 0
+  done
+  return 1
+}
+
+host_lib_arch() {
+  case "$(uname -m)" in
+    aarch64 | arm64) echo "aarch64" ;;
+    x86_64 | amd64) echo "x86_64" ;;
+    *) uname -m ;;
+  esac
+}
+
+collect_cann_host_link_dirs_for_root() {
+  local root="$1"
+  local arch="$2"
+  local dirs="$3"
+  local dir=""
+  for dir in \
+    "${root}/lib64" \
+    "${root}/${arch}-linux/lib64" \
+    "${root}/runtime/lib64" \
+    "${root}/fwkacllib/lib64" \
+    "${root}/${arch}-linux/devlib" \
+    "${root}/${arch}-linux/devlib/linux/${arch}"; do
+    [[ -d "${dir}" ]] || continue
+    if [[ -e "${dir}/libnnopbase.so" || -e "${dir}/libascendcl.so" \
+       || -e "${dir}/libplatform.so" || -e "${dir}/libtiling_api.a" \
+       || -e "${dir}/libtiling_api.so" ]]; then
+      dirs="$(append_unique_colon_item "${dirs}" "${dir}")"
+    fi
+  done
+  echo "${dirs}"
+}
+
+discover_cann_host_link_dirs() {
+  local arch="$1"
+  local dirs=""
+  local root=""
+  local current_base=""
+  local -a candidate_roots=()
+  shopt -s nullglob
+
+  if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
+    dirs="$(collect_cann_host_link_dirs_for_root "${ASCEND_HOME_PATH}" "${arch}" "${dirs}")"
+    current_base="$(basename "${ASCEND_HOME_PATH}")"
+  fi
+  if list_contains_file "${dirs}" "libnnopbase.so"; then
+    shopt -u nullglob
+    echo "${dirs}"
+    return 0
+  fi
+
+  for root in \
+    /usr/local/Ascend/cann \
+    /usr/local/Ascend/cann-* \
+    /usr/local/Ascend/ascend-toolkit/latest \
+    /home/*/cann*/cann-* \
+    /home/*/*/cann-* \
+    /home/*/Ascend/*/cann-*; do
+    [[ -d "${root}" ]] || continue
+    [[ -n "${current_base}" && "${root}" == "${ASCEND_HOME_PATH:-}" ]] && continue
+    if [[ -n "${current_base}" && "${root}" == *"/${current_base}" ]]; then
+      candidate_roots+=("${root}")
+    fi
+  done
+  for root in \
+    /usr/local/Ascend/cann \
+    /usr/local/Ascend/cann-* \
+    /usr/local/Ascend/ascend-toolkit/latest \
+    /home/*/cann*/cann-* \
+    /home/*/*/cann-* \
+    /home/*/Ascend/*/cann-*; do
+    [[ -d "${root}" ]] || continue
+    [[ "${root}" == "${ASCEND_HOME_PATH:-}" ]] && continue
+    candidate_roots+=("${root}")
+  done
+  shopt -u nullglob
+
+  for root in "${candidate_roots[@]}"; do
+    dirs="$(collect_cann_host_link_dirs_for_root "${root}" "$(host_lib_arch)" "${dirs}")"
+    if list_contains_file "${dirs}" "libnnopbase.so"; then
+      break
+    fi
+  done
+  echo "${dirs}"
+}
+
 cd "${ROOT_DIR}"
 python3 "${ROOT_DIR}/golden.py"
 
@@ -60,7 +171,16 @@ fi
 
 # Improve runtime linking robustness.
 if [[ -n "${ASCEND_HOME_PATH:-}" ]]; then
-  export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
+  if [[ -z "${PTO_CANN_EXTRA_LINK_DIRS:-}" ]]; then
+    PTO_CANN_EXTRA_LINK_DIRS="$(discover_cann_host_link_dirs "$(host_lib_arch)")"
+  fi
+  if [[ -n "${PTO_CANN_EXTRA_LINK_DIRS:-}" ]]; then
+    export PTO_CANN_EXTRA_LINK_DIRS
+    export LIBRARY_PATH="${PTO_CANN_EXTRA_LINK_DIRS}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+    export LD_LIBRARY_PATH="${PTO_CANN_EXTRA_LINK_DIRS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  else
+    export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
+  fi
 fi
 
 LD_LIBRARY_PATH_NPU="${LD_LIBRARY_PATH:-}"

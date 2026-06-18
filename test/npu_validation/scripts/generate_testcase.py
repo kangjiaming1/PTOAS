@@ -1981,6 +1981,11 @@ def generate_testcase(
             if runtime_rt_include
             else '#include "pto/npu/comm/async/sdma/sdma_workspace_manager.hpp"'
         )
+    cann_extra_link_dirs = """set(PTO_CANN_EXTRA_LINK_DIRS "")
+if(DEFINED ENV{PTO_CANN_EXTRA_LINK_DIRS} AND NOT "$ENV{PTO_CANN_EXTRA_LINK_DIRS}" STREQUAL "")
+    string(REPLACE ":" ";" PTO_CANN_EXTRA_LINK_DIRS "$ENV{PTO_CANN_EXTRA_LINK_DIRS}")
+endif()
+"""
     main_cpp = (
         template
         .replace("@RUNTIME_RT_INCLUDE@", runtime_rt_include)
@@ -2365,6 +2370,8 @@ include_directories(
     ${{ASCEND_DRIVER_PATH}}/kernel/inc
 )
 
+{cann_extra_link_dirs}
+
 	add_library({testcase}_kernel SHARED {testcase}_kernel.cpp launch.cpp)
 	target_compile_options({testcase}_kernel PRIVATE ${{CMAKE_CCE_COMPILE_OPTIONS}} --cce-aicore-arch={aicore_arch}{dav_defines} -D{mem_base_define} -std=c++17)
 	target_include_directories({testcase}_kernel PRIVATE
@@ -2383,12 +2390,25 @@ target_include_directories({testcase} PRIVATE
 
 target_link_directories({testcase} PUBLIC
     ${{ASCEND_HOME_PATH}}/lib64
+    ${{PTO_CANN_EXTRA_LINK_DIRS}}
 )
+
+find_library(PTO_NNOPBASE_LIB
+    NAMES nnopbase
+    HINTS ${{PTO_CANN_EXTRA_LINK_DIRS}} ${{ASCEND_HOME_PATH}}/lib64
+    NO_DEFAULT_PATH
+)
+if(NOT PTO_NNOPBASE_LIB)
+    find_library(PTO_NNOPBASE_LIB NAMES nnopbase)
+endif()
+if(NOT PTO_NNOPBASE_LIB)
+    message(FATAL_ERROR "Cannot find libnnopbase.so. Set PTO_CANN_EXTRA_LINK_DIRS or fix ASCEND_HOME_PATH.")
+endif()
 
 target_link_libraries({testcase} PRIVATE
     {testcase}_kernel
     runtime
-    stdc++ ascendcl m tiling_api platform c_sec dl nnopbase
+    stdc++ ascendcl m tiling_api platform c_sec dl ${{PTO_NNOPBASE_LIB}}
 )
 
 if(ENABLE_SIM_GOLDEN)
@@ -2401,6 +2421,7 @@ if(ENABLE_SIM_GOLDEN)
 {runtime_host_include_dirs})
     target_link_directories({testcase}_sim PUBLIC
         ${{ASCEND_HOME_PATH}}/lib64
+        ${{PTO_CANN_EXTRA_LINK_DIRS}}
         ${{ASCEND_HOME_PATH}}/aarch64-linux/simulator/${{SOC_VERSION}}/lib
         ${{ASCEND_HOME_PATH}}/x86_64-linux/simulator/${{SOC_VERSION}}/lib
         ${{ASCEND_HOME_PATH}}/simulator/${{SOC_VERSION}}/lib
@@ -2409,7 +2430,7 @@ if(ENABLE_SIM_GOLDEN)
     target_link_libraries({testcase}_sim PRIVATE
         {testcase}_kernel
         runtime_camodel
-        stdc++ ascendcl m tiling_api platform c_sec dl nnopbase
+        stdc++ ascendcl m tiling_api platform c_sec dl ${{PTO_NNOPBASE_LIB}}
     )
 endif()
 """
