@@ -1,52 +1,54 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
-# This program is free software and you can redistribute it and/or modify it under the terms and conditions of
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 # CANN Open Software License Agreement Version 2.0 (the "License").
 # Please refer to the License for details. You may not use this file except in compliance with the License.
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
-# See LICENSE in the root directory of this software repository for the full text of the License.
+# See LICENSE in the root of the software repository for the full text of the License.
 
+"""CI/remote-validation compare for the TquantMx sample.
+
+The tquant.mx kernel has four outputs with different dtypes (fp8 dst, e8m0 exp,
+f32 max, f32 scaling), so we cannot use the single-dtype compare_outputs helper.
+Instead we compare each output with its own dtype and tolerance.
+"""
+
+from pathlib import Path
 import sys
+
 import numpy as np
+
+for search_root in (Path(__file__).resolve().parent, Path(__file__).resolve().parents[1]):
+    if (search_root / "validation_runtime.py").is_file():
+        sys.path.insert(0, str(search_root))
+        break
+
+from validation_runtime import compare_file, finalize_compare, load_case_meta
 
 
 def main():
-    # dst: fp8 e4m3fn packed as int8, [16, 32] = 512 bytes
-    golden = np.fromfile("golden.bin", dtype=np.int8).reshape(16, 32)
-    output = np.fromfile("output.bin", dtype=np.int8).reshape(16, 32)
+    meta = load_case_meta()
+    output_names = meta.outputs
 
-    if not np.array_equal(golden, output):
-        diff = golden.astype(np.int32) - output.astype(np.int32)
-        idx = np.unravel_index(np.argmax(np.abs(diff)), diff.shape)
-        print(
-            f"[ERROR] dst mismatch at {idx}: golden={int(golden[idx])} "
-            f"output={int(output[idx])} diff={int(diff[idx])}"
-        )
-        sys.exit(2)
+    # Outputs are ordered by tstore appearance: dst, exp, max, scaling.
+    # Map by position; fall back to name heuristics if fewer than 4 detected.
+    dst_name = output_names[0] if len(output_names) > 0 else "v2"
+    exp_name = output_names[1] if len(output_names) > 1 else "v3"
+    max_name = output_names[2] if len(output_names) > 2 else "v4"
+    scaling_name = output_names[3] if len(output_names) > 3 else "v5"
 
-    # exp: ui8 [1, 16]
-    exp_golden = np.fromfile("exp.bin", dtype=np.uint8).reshape(1, 16)
-    exp_output = np.fromfile("exp_out.bin", dtype=np.uint8).reshape(1, 16)
-    if not np.array_equal(exp_golden, exp_output):
-        print(f"[ERROR] exp mismatch: golden={exp_golden.tolist()} output={exp_output.tolist()}")
-        sys.exit(2)
+    ok = True
+    # dst: fp8 e4m3fn packed as int8 — exact byte match.
+    ok = compare_file(f"golden_{dst_name}.bin", f"{dst_name}.bin", np.int8, atol=0.0) and ok
+    # exp: e8m0 as uint8 — exact match.
+    ok = compare_file(f"golden_{exp_name}.bin", f"{exp_name}.bin", np.uint8, atol=0.0) and ok
+    # max: f32 per-group absmax.
+    ok = compare_file(f"golden_{max_name}.bin", f"{max_name}.bin", np.float32, atol=1e-5) and ok
+    # scaling: f32 per-group reciprocal scale.
+    ok = compare_file(f"golden_{scaling_name}.bin", f"{scaling_name}.bin", np.float32, atol=1e-5) and ok
 
-    # max: f32 [1, 16]
-    max_golden = np.fromfile("max.bin", dtype=np.float32).reshape(1, 16)
-    max_output = np.fromfile("max_out.bin", dtype=np.float32).reshape(1, 16)
-    if not np.allclose(max_golden, max_output, atol=1e-5, rtol=1e-5):
-        print(f"[ERROR] max mismatch: golden={max_golden.tolist()} output={max_output.tolist()}")
-        sys.exit(2)
-
-    # scaling: f32 [1, 16] per-group reciprocal scale
-    sc_golden = np.fromfile("scaling.bin", dtype=np.float32).reshape(1, 16)
-    sc_output = np.fromfile("scaling_out.bin", dtype=np.float32).reshape(1, 16)
-    if not np.allclose(sc_golden, sc_output, atol=1e-5, rtol=1e-5):
-        print(f"[ERROR] scaling mismatch: golden={sc_golden.tolist()} output={sc_output.tolist()}")
-        sys.exit(2)
-
-    print("[INFO] compare passed")
+    finalize_compare(ok)
 
 
 if __name__ == "__main__":
