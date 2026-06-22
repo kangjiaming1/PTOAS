@@ -312,6 +312,7 @@ def _describe_kernel_source(text: str):
                 "analysis_texts": [func["text"]],
                 "writer_texts": [func["text"]],
                 "call_text": func["text"],
+                "needs_global_wrapper": False,
             }
 
     if len(functions) == 1:
@@ -323,6 +324,7 @@ def _describe_kernel_source(text: str):
             "analysis_texts": [func["text"]],
             "writer_texts": [func["text"]],
             "call_text": func["text"],
+            "needs_global_wrapper": not func["is_global"],
         }
 
     mixed_groups = {}
@@ -348,6 +350,7 @@ def _describe_kernel_source(text: str):
                 "aic_text": group["aic"]["text"],
                 "aiv_text": group["aiv"]["text"],
                 "call_text": group["aiv"]["text"],
+                "needs_global_wrapper": False,
             }
 
     return {
@@ -357,7 +360,37 @@ def _describe_kernel_source(text: str):
         "analysis_texts": [text],
         "writer_texts": [text],
         "call_text": text,
+        "needs_global_wrapper": False,
     }
+
+
+def _append_single_kernel_global_wrapper(
+    kernel_text: str,
+    kernel_name: str,
+    raw_params: list[str],
+) -> str:
+    impl_name = f"__ptoas_{kernel_name}_impl"
+    pattern = re.compile(
+        rf"(?P<prefix>extern\s+\"C\"\s+)?AICORE\s+void\s+{re.escape(kernel_name)}\s*\((?P<params>[^)]*)\)\s*\{{",
+        re.S,
+    )
+
+    def _replace_entry(match):
+        params = match.group("params").strip()
+        return f"static AICORE inline void {impl_name}({params}) {{"
+
+    rewritten, count = pattern.subn(_replace_entry, kernel_text, count=1)
+    if count == 0:
+        return kernel_text
+
+    call_args = ", ".join(_extract_cpp_name(param) for param in raw_params)
+    wrapper = (
+        "\n\n"
+        f"extern \"C\" __global__ AICORE void {kernel_name}({', '.join(raw_params)}) {{\n"
+        f"  {impl_name}({call_args});\n"
+        "}\n"
+    )
+    return rewritten.rstrip() + wrapper
 
 
 def _append_mixed_kernel_wrapper(
@@ -1987,6 +2020,11 @@ def generate_testcase(
             if runtime_rt_include
             else '#include "pto/npu/comm/async/sdma/sdma_workspace_manager.hpp"'
         )
+    cann_extra_link_dirs = """set(PTO_CANN_EXTRA_LINK_DIRS "")
+if(DEFINED ENV{PTO_CANN_EXTRA_LINK_DIRS} AND NOT "$ENV{PTO_CANN_EXTRA_LINK_DIRS}" STREQUAL "")
+    string(REPLACE ":" ";" PTO_CANN_EXTRA_LINK_DIRS "$ENV{PTO_CANN_EXTRA_LINK_DIRS}")
+endif()
+"""
     main_cpp = (
         template
         .replace("@RUNTIME_RT_INCLUDE@", runtime_rt_include)
@@ -2219,6 +2257,13 @@ def generate_testcase(
                     logical_elem_count=logical_elem_count,
                 )
 
+    if kernel_info.get("needs_global_wrapper"):
+        kernel_text_out = _append_single_kernel_global_wrapper(
+            kernel_text_out,
+            kernel_name,
+            raw_params,
+        )
+
     if is_mixed_kernel:
         kernel_text_out = _append_mixed_kernel_wrapper(
             kernel_text_out,
@@ -2371,6 +2416,8 @@ include_directories(
     ${{ASCEND_DRIVER_PATH}}/kernel/inc
 )
 
+{cann_extra_link_dirs}
+
 	add_library({testcase}_kernel SHARED {testcase}_kernel.cpp launch.cpp)
 	target_compile_options({testcase}_kernel PRIVATE ${{CMAKE_CCE_COMPILE_OPTIONS}} --cce-aicore-arch={aicore_arch}{dav_defines} -D{mem_base_define} -std=c++17)
 	target_include_directories({testcase}_kernel PRIVATE
@@ -2389,13 +2436,27 @@ target_include_directories({testcase} PRIVATE
 
 target_link_directories({testcase} PUBLIC
     ${{ASCEND_HOME_PATH}}/lib64
+    ${{PTO_CANN_EXTRA_LINK_DIRS}}
 )
+
+find_library(PTO_NNOPBASE_LIB
+    NAMES nnopbase
+    HINTS ${{PTO_CANN_EXTRA_LINK_DIRS}} ${{ASCEND_HOME_PATH}}/lib64
+    NO_DEFAULT_PATH
+)
+if(NOT PTO_NNOPBASE_LIB)
+    find_library(PTO_NNOPBASE_LIB NAMES nnopbase)
+endif()
+if(NOT PTO_NNOPBASE_LIB)
+    message(FATAL_ERROR "Cannot find libnnopbase.so. Set PTO_CANN_EXTRA_LINK_DIRS or fix ASCEND_HOME_PATH.")
+endif()
 
 target_link_libraries({testcase} PRIVATE
     {testcase}_kernel
     runtime
-    stdc++ ascendcl m tiling_api platform c_sec dl nnopbase
+    stdc++ ascendcl m tiling_api platform c_sec dl ${{PTO_NNOPBASE_LIB}}
 )
+target_link_options({testcase} PRIVATE -Wl,--allow-shlib-undefined)
 
 if(ENABLE_SIM_GOLDEN)
     # Simulator executable: used to generate golden outputs (Ascend camodel).
@@ -2407,6 +2468,7 @@ if(ENABLE_SIM_GOLDEN)
 {runtime_host_include_dirs})
     target_link_directories({testcase}_sim PUBLIC
         ${{ASCEND_HOME_PATH}}/lib64
+        ${{PTO_CANN_EXTRA_LINK_DIRS}}
         ${{ASCEND_HOME_PATH}}/aarch64-linux/simulator/${{SOC_VERSION}}/lib
         ${{ASCEND_HOME_PATH}}/x86_64-linux/simulator/${{SOC_VERSION}}/lib
         ${{ASCEND_HOME_PATH}}/simulator/${{SOC_VERSION}}/lib
@@ -2415,8 +2477,9 @@ if(ENABLE_SIM_GOLDEN)
     target_link_libraries({testcase}_sim PRIVATE
         {testcase}_kernel
         runtime_camodel
-        stdc++ ascendcl m tiling_api platform c_sec dl nnopbase
+        stdc++ ascendcl m tiling_api platform c_sec dl ${{PTO_NNOPBASE_LIB}}
     )
+    target_link_options({testcase}_sim PRIVATE -Wl,--allow-shlib-undefined)
 endif()
 """
     (output_dir / "CMakeLists.txt").write_text(cmake_content.strip() + "\n", encoding="utf-8")
