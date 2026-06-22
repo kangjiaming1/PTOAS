@@ -312,6 +312,7 @@ def _describe_kernel_source(text: str):
                 "analysis_texts": [func["text"]],
                 "writer_texts": [func["text"]],
                 "call_text": func["text"],
+                "needs_global_wrapper": False,
             }
 
     if len(functions) == 1:
@@ -323,6 +324,7 @@ def _describe_kernel_source(text: str):
             "analysis_texts": [func["text"]],
             "writer_texts": [func["text"]],
             "call_text": func["text"],
+            "needs_global_wrapper": not func["is_global"],
         }
 
     mixed_groups = {}
@@ -348,6 +350,7 @@ def _describe_kernel_source(text: str):
                 "aic_text": group["aic"]["text"],
                 "aiv_text": group["aiv"]["text"],
                 "call_text": group["aiv"]["text"],
+                "needs_global_wrapper": False,
             }
 
     return {
@@ -357,7 +360,37 @@ def _describe_kernel_source(text: str):
         "analysis_texts": [text],
         "writer_texts": [text],
         "call_text": text,
+        "needs_global_wrapper": False,
     }
+
+
+def _append_single_kernel_global_wrapper(
+    kernel_text: str,
+    kernel_name: str,
+    raw_params: list[str],
+) -> str:
+    impl_name = f"__ptoas_{kernel_name}_impl"
+    pattern = re.compile(
+        rf"(?P<prefix>extern\s+\"C\"\s+)?AICORE\s+void\s+{re.escape(kernel_name)}\s*\((?P<params>[^)]*)\)\s*\{{",
+        re.S,
+    )
+
+    def _replace_entry(match):
+        params = match.group("params").strip()
+        return f"static AICORE inline void {impl_name}({params}) {{"
+
+    rewritten, count = pattern.subn(_replace_entry, kernel_text, count=1)
+    if count == 0:
+        return kernel_text
+
+    call_args = ", ".join(_extract_cpp_name(param) for param in raw_params)
+    wrapper = (
+        "\n\n"
+        f"extern \"C\" __global__ AICORE void {kernel_name}({', '.join(raw_params)}) {{\n"
+        f"  {impl_name}({call_args});\n"
+        "}\n"
+    )
+    return rewritten.rstrip() + wrapper
 
 
 def _append_mixed_kernel_wrapper(
@@ -2217,6 +2250,13 @@ endif()
                     cols=cols,
                     logical_elem_count=logical_elem_count,
                 )
+
+    if kernel_info.get("needs_global_wrapper"):
+        kernel_text_out = _append_single_kernel_global_wrapper(
+            kernel_text_out,
+            kernel_name,
+            raw_params,
+        )
 
     if is_mixed_kernel:
         kernel_text_out = _append_mixed_kernel_wrapper(
